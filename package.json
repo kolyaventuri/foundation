@@ -1,0 +1,28 @@
+{
+  "name": "foundation",
+  "private": true,
+  "packageManager": "pnpm@10.29.3",
+  "scripts": {
+    "build": "pnpm --filter @ha-repair/web build",
+    "dev": "concurrently -n api,web -c yellow,cyan \"pnpm dev:api\" \"pnpm dev:web\"",
+    "dev:api": "pnpm --filter @ha-repair/api dev",
+    "dev:web": "pnpm --filter @ha-repair/web dev",
+    "framework:status": "pnpm --filter @ha-repair/cli dev -- framework status",
+    "lint": "xo",
+    "test": "vitest run",
+    "typecheck": "pnpm -r --if-present typecheck"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "@vitejs/plugin-react": "^5.0.0",
+    "concurrently": "^9.1.2",
+    "tsx": "^4.20.0",
+    "typescript": "^5.8.2",
+    "vite": "^7.0.0",
+    "vitest": "^3.2.4",
+    "xo": "^0.60.0"
+  }
+}
+

@@ -1,0 +1,9 @@
+node_modules/
+dist/
+coverage/
+.vite/
+.DS_Store
+*.db
+*.sqlite
+*.sqlite3
+.history/

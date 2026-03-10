@@ -1,0 +1,15 @@
+{
+  "name": "@ha-repair/cli",
+  "private": true,
+  "dependencies": {
+    "@ha-repair/ha-client": "workspace:*",
+    "@ha-repair/llm": "workspace:*",
+    "@ha-repair/scan-engine": "workspace:*",
+    "commander": "^14.0.0"
+  },
+  "scripts": {
+    "dev": "tsx src/index.ts",
+    "typecheck": "tsc --project tsconfig.json --noEmit"
+  }
+}
+

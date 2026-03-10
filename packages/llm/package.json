@@ -1,0 +1,13 @@
+{
+  "name": "@ha-repair/llm",
+  "private": true,
+  "dependencies": {
+    "@ha-repair/contracts": "workspace:*"
+  },
+  "exports": "./src/index.ts",
+  "types": "./src/index.ts",
+  "scripts": {
+    "typecheck": "tsc --project tsconfig.json --noEmit"
+  }
+}
+

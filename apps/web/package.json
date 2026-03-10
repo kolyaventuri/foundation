@@ -1,0 +1,18 @@
+{
+  "name": "@ha-repair/web",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@ha-repair/contracts": "workspace:*",
+    "@ha-repair/llm": "workspace:*",
+    "@ha-repair/scan-engine": "workspace:*",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
+  },
+  "scripts": {
+    "build": "vite build",
+    "dev": "vite",
+    "typecheck": "tsc --project tsconfig.json --noEmit"
+  }
+}
+

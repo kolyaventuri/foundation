@@ -1,0 +1,17 @@
+{
+  "name": "@ha-repair/api",
+  "private": true,
+  "dependencies": {
+    "@fastify/cors": "^11.0.0",
+    "@ha-repair/contracts": "workspace:*",
+    "@ha-repair/ha-client": "workspace:*",
+    "@ha-repair/llm": "workspace:*",
+    "@ha-repair/scan-engine": "workspace:*",
+    "fastify": "^5.2.1"
+  },
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "typecheck": "tsc --project tsconfig.json --noEmit"
+  }
+}
+
