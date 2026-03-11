@@ -659,6 +659,10 @@ export function App() {
   }
 
   function updateScanLaunchMode(mode: ScanMode) {
+    if (mode === 'live') {
+      void loadProfiles();
+    }
+
     setScanLaunchDraft((current) =>
       normalizeScanLaunchDraft(
         {
@@ -668,6 +672,10 @@ export function App() {
         profiles,
       ),
     );
+  }
+
+  function refreshProfiles() {
+    void loadProfiles();
   }
 
   function updateScanLaunchProfile(profileName: string) {
@@ -989,6 +997,10 @@ export function App() {
                 <button
                   className={secondaryButtonClass}
                   onClick={() => {
+                    if (!scanLauncherOpen) {
+                      refreshProfiles();
+                    }
+
                     setScanLauncherOpen((current) => !current);
                   }}
                   type="button"
@@ -1086,6 +1098,7 @@ export function App() {
                   onRunScan={() => {
                     void runScan();
                   }}
+                  onRefreshProfiles={refreshProfiles}
                   onUpdateDeep={updateScanLaunchDeep}
                   onUpdateMode={updateScanLaunchMode}
                   onUpdateProfile={updateScanLaunchProfile}
@@ -1362,6 +1375,7 @@ export function App() {
           onRunScan={() => {
             void runScan();
           }}
+          onRefreshProfiles={refreshProfiles}
           onUpdateDeep={updateScanLaunchDeep}
           onUpdateMode={updateScanLaunchMode}
           onUpdateProfile={updateScanLaunchProfile}
@@ -1384,6 +1398,7 @@ function LandingView({
   mutationStatus,
   onOpenScan,
   onRunScan,
+  onRefreshProfiles,
   onUpdateDeep,
   onUpdateMode,
   onUpdateProfile,
@@ -1400,6 +1415,7 @@ function LandingView({
   mutationStatus: MutationStatus;
   onOpenScan: (scanId: string) => void;
   onRunScan: () => void;
+  onRefreshProfiles: () => void;
   onUpdateDeep: (deep: boolean) => void;
   onUpdateMode: (mode: ScanMode) => void;
   onUpdateProfile: (profileName: string) => void;
@@ -1453,6 +1469,7 @@ function LandingView({
             modeLabel={formatScanAction(scanLaunchDraft.mode)}
             mutationStatus={mutationStatus}
             onRunScan={onRunScan}
+            onRefreshProfiles={onRefreshProfiles}
             onUpdateDeep={onUpdateDeep}
             onUpdateMode={onUpdateMode}
             onUpdateProfile={onUpdateProfile}
@@ -1529,6 +1546,7 @@ function ScanLauncherPanel({
   modeLabel,
   mutationStatus,
   onRunScan,
+  onRefreshProfiles,
   onUpdateDeep,
   onUpdateMode,
   onUpdateProfile,
@@ -1543,6 +1561,7 @@ function ScanLauncherPanel({
   modeLabel: string;
   mutationStatus: MutationStatus;
   onRunScan: () => void;
+  onRefreshProfiles: () => void;
   onUpdateDeep: (deep: boolean) => void;
   onUpdateMode: (mode: ScanMode) => void;
   onUpdateProfile: (profileName: string) => void;
@@ -1578,14 +1597,24 @@ function ScanLauncherPanel({
             {helperMessage}
           </p>
         </div>
-        <button
-          className={primaryButtonClass}
-          disabled={!canRunScan}
-          onClick={onRunScan}
-          type="button"
-        >
-          {modeLabel}
-        </button>
+        <div className="flex flex-wrap items-center gap-3">
+          <button
+            className={secondaryButtonClass}
+            disabled={profilesStatus === 'loading'}
+            onClick={onRefreshProfiles}
+            type="button"
+          >
+            Refresh profiles
+          </button>
+          <button
+            className={primaryButtonClass}
+            disabled={!canRunScan}
+            onClick={onRunScan}
+            type="button"
+          >
+            {modeLabel}
+          </button>
+        </div>
       </div>
 
       <div className="mt-4 grid gap-3 lg:grid-cols-[12rem_minmax(0,1fr)]">

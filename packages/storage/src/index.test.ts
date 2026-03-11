@@ -1,6 +1,7 @@
 import {existsSync, mkdtempSync, rmSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
+import process from 'node:process';
 import {DatabaseSync} from 'node:sqlite';
 import {afterEach, describe, expect, it} from 'vitest';
 import type {InventoryGraph} from '@ha-repair/contracts';
@@ -310,6 +311,34 @@ describe('storage service', () => {
       expect('token' in firstProfile!).toBe(false);
     } finally {
       await secondService.close();
+    }
+  });
+
+  it('uses HA_REPAIR_DB_PATH from process.env when no explicit dbPath is passed', async () => {
+    const dbPath = createTempDatabasePath();
+    const previousDbPath = process.env.HA_REPAIR_DB_PATH;
+    process.env.HA_REPAIR_DB_PATH = dbPath;
+
+    const service = await createRepairService();
+
+    try {
+      expect(service.resolveDatabasePath()).toBe(dbPath);
+
+      await service.saveProfile({
+        baseUrl: 'https://ha.local:8123',
+        name: 'env-profile',
+        token: 'abc123',
+      });
+
+      expect(existsSync(dbPath)).toBe(true);
+    } finally {
+      await service.close();
+
+      if (previousDbPath === undefined) {
+        delete process.env.HA_REPAIR_DB_PATH;
+      } else {
+        process.env.HA_REPAIR_DB_PATH = previousDbPath;
+      }
     }
   });
 

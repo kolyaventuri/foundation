@@ -336,7 +336,10 @@ function normalizeInlineProfile(
 }
 
 function resolveDatabasePath(options: RepairServiceOptions = {}): string {
-  const configuredPath = options.dbPath ?? options.env?.HA_REPAIR_DB_PATH;
+  const configuredPath =
+    options.dbPath ??
+    options.env?.HA_REPAIR_DB_PATH ??
+    process.env.HA_REPAIR_DB_PATH;
   const selectedPath =
     configuredPath && configuredPath.length > 0
       ? configuredPath
