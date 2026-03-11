@@ -62,7 +62,7 @@ afterEach(() => {
 });
 
 describe('cli', () => {
-  it('supports saved profiles, reviewed previews, dry-run apply, and json export', async () => {
+  it('supports saved profiles, reviewed previews, dry-run apply, and markdown/json exports', async () => {
     const dbPath = createTempDatabasePath();
 
     const saveResult = await runCliCommand(
@@ -143,9 +143,10 @@ describe('cli', () => {
     );
     expect(previewResult.exitCode).toBe(0);
     const preview = JSON.parse(previewResult.stdout) as FixPreviewResponse;
-    expect(preview).toMatchObject({
-      scanId: scanSummary.scanId,
-    });
+    expect(preview.queue.createdAt).toEqual(expect.any(String));
+    expect(preview.queue.id).toEqual(expect.any(String));
+    expect(preview.queue.status).toBe('pending_review');
+    expect(preview.scanId).toBe(scanSummary.scanId);
     expect(preview.previewToken).toEqual(expect.any(String));
     expect(preview.actions).toHaveLength(1);
     const previewAction = preview.actions[0];
@@ -191,6 +192,9 @@ describe('cli', () => {
     expect(applySelected.actions).toHaveLength(1);
     expect(applySelected.mode).toBe('dry_run');
     expect(applySelected.previewToken).toBe(preview.previewToken);
+    expect(applySelected.queue.id).toBe(preview.queue.id);
+    expect(applySelected.queue.lastAppliedAt).toEqual(expect.any(String));
+    expect(applySelected.queue.status).toBe('dry_run_applied');
 
     const rejectedApplyResult = await runCliCommand(
       [
@@ -215,11 +219,25 @@ describe('cli', () => {
     );
     expect(exportResult.exitCode).toBe(0);
     const exportBundle = JSON.parse(exportResult.stdout) as {
+      actions: unknown[];
       scan: {
         id: string;
       };
     };
+    expect(exportBundle.actions.length).toBeGreaterThan(0);
     expect(exportBundle.scan.id).toBe(scanSummary.scanId);
+
+    const markdownExportResult = await runCliCommand(
+      ['export', scanSummary.scanId, '--format', 'md'],
+      dbPath,
+    );
+    expect(markdownExportResult.exitCode).toBe(0);
+    expect(markdownExportResult.stdout).toContain(
+      '# Home Assistant Repair Report',
+    );
+    expect(markdownExportResult.stdout).toContain(
+      `Scan ID: ${scanSummary.scanId}`,
+    );
 
     const deleteResult = await runCliCommand(
       ['connect', 'delete', 'primary'],

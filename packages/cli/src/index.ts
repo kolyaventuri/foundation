@@ -5,6 +5,7 @@ import {listProviderDescriptors} from '@ha-repair/llm';
 import {createFrameworkSummary} from '@ha-repair/scan-engine';
 import {
   createRepairService,
+  renderScanExportMarkdown,
   RepairServiceError,
   type RepairService,
 } from '@ha-repair/storage';
@@ -402,17 +403,17 @@ export function buildProgram() {
 
   program
     .command('export [scanId]')
-    .description('Export a scan bundle as JSON')
+    .description('Export a scan bundle as JSON or Markdown')
     .addOption(
       new Option('--format <format>', 'Export format')
-        .choices(['json'])
+        .choices(['json', 'md'])
         .default('json'),
     )
     .action(
       async (
         scanId: string | undefined,
         _options: {
-          format: 'json';
+          format: 'json' | 'md';
         },
         command: Command,
       ) => {
@@ -420,6 +421,11 @@ export function buildProgram() {
           const exportBundle = await withService(command, async (service) =>
             service.exportScan(scanId),
           );
+
+          if (_options.format === 'md') {
+            console.log(renderScanExportMarkdown(exportBundle));
+            return;
+          }
 
           printJson(exportBundle);
         } catch (error) {

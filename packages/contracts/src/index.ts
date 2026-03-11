@@ -188,6 +188,15 @@ export type FixPreviewRequest = {
   scanId: string;
 };
 
+export type FixQueueStatus = 'pending_review' | 'dry_run_applied';
+
+export type FixQueueEntry = {
+  createdAt: string;
+  id: string;
+  lastAppliedAt?: string;
+  status: FixQueueStatus;
+};
+
 export type FixSelection = {
   actionIds: string[];
   findingIds: string[];
@@ -197,6 +206,7 @@ export type FixPreviewResponse = {
   actions: FixAction[];
   generatedAt: string;
   previewToken: string;
+  queue: FixQueueEntry;
   scanId: string;
   selection: FixSelection;
 };
@@ -213,13 +223,16 @@ export type FixApplyResponse = {
   appliedCount: number;
   mode: 'dry_run';
   previewToken: string;
+  queue: FixQueueEntry;
   scanId: string;
   selection: FixSelection;
 };
 
 export type ScanExportBundle = {
+  actions: FixAction[];
   diffSummary: ScanDiffSummary;
   findings: Finding[];
+  generatedAt: string;
   scan: {
     createdAt: string;
     id: string;

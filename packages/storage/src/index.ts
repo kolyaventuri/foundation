@@ -1,4 +1,4 @@
-import {createHash} from 'node:crypto';
+import {randomUUID} from 'node:crypto';
 import {mkdirSync} from 'node:fs';
 import {dirname, resolve as resolvePath} from 'node:path';
 import process from 'node:process';
@@ -22,6 +22,8 @@ import type {
   FixAction,
   FixApplyRequest,
   FixApplyResponse,
+  FixQueueEntry,
+  FixQueueStatus,
   FixPreviewRequest,
   FixPreviewResponse,
   FixSelection,
@@ -38,7 +40,7 @@ import {collectMockInventory, testConnection} from '@ha-repair/ha-client';
 import {createFixActions, runScan} from '@ha-repair/scan-engine';
 
 const defaultDatabasePath = './data/ha-repair.sqlite';
-const currentSchemaVersion = 1;
+const currentSchemaVersion = 2;
 const defaultProfileSettingKey = 'defaultProfileName';
 
 const profilesTable = sqliteTable('profiles', {
@@ -96,9 +98,35 @@ const appSettingsTable = sqliteTable('app_settings', {
   value: text('value').notNull(),
 });
 
+const fixQueueEntriesTable = sqliteTable(
+  'fix_queue_entries',
+  {
+    sequence: integer('sequence').primaryKey({autoIncrement: true}),
+    id: text('id').notNull(),
+    scanId: text('scan_id').notNull(),
+    previewToken: text('preview_token').notNull(),
+    status: text('status').$type<FixQueueStatus>().notNull(),
+    selectionJson: text('selection_json').notNull(),
+    actionsJson: text('actions_json').notNull(),
+    createdAt: text('created_at').notNull(),
+    lastAppliedAt: text('last_applied_at'),
+  },
+  (table) => ({
+    idIndex: uniqueIndex('fix_queue_entries_id_idx').on(table.id),
+    scanPreviewTokenIndex: uniqueIndex(
+      'fix_queue_entries_scan_id_preview_token_idx',
+    ).on(table.scanId, table.previewToken),
+    scanSequenceIndex: index('fix_queue_entries_scan_sequence_idx').on(
+      table.scanId,
+      table.sequence,
+    ),
+  }),
+);
+
 type ProfilesRow = typeof profilesTable.$inferSelect;
 type ScanRunRow = typeof scanRunsTable.$inferSelect;
 type ScanFindingRow = typeof scanFindingsTable.$inferSelect;
+type FixQueueEntryRow = typeof fixQueueEntriesTable.$inferSelect;
 
 export type RepairServiceOptions = {
   cwd?: string;
@@ -237,56 +265,81 @@ function applyMigrations(database: DatabaseSync) {
     return;
   }
 
-  database.exec(`
-    PRAGMA foreign_keys = ON;
+  database.exec('PRAGMA foreign_keys = ON;');
 
-    CREATE TABLE IF NOT EXISTS profiles (
-      name TEXT PRIMARY KEY,
-      base_url TEXT NOT NULL,
-      config_path TEXT,
-      token TEXT NOT NULL,
-      created_at TEXT NOT NULL,
-      updated_at TEXT NOT NULL
-    );
+  if (version < 1) {
+    database.exec(`
+      CREATE TABLE IF NOT EXISTS profiles (
+        name TEXT PRIMARY KEY,
+        base_url TEXT NOT NULL,
+        config_path TEXT,
+        token TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
 
-    CREATE TABLE IF NOT EXISTS scan_runs (
-      sequence INTEGER PRIMARY KEY AUTOINCREMENT,
-      id TEXT NOT NULL UNIQUE,
-      created_at TEXT NOT NULL,
-      profile_name TEXT,
-      inventory_json TEXT NOT NULL,
-      findings_count INTEGER NOT NULL
-    );
+      CREATE TABLE IF NOT EXISTS scan_runs (
+        sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+        id TEXT NOT NULL UNIQUE,
+        created_at TEXT NOT NULL,
+        profile_name TEXT,
+        inventory_json TEXT NOT NULL,
+        findings_count INTEGER NOT NULL
+      );
 
-    CREATE INDEX IF NOT EXISTS scan_runs_profile_sequence_idx
-    ON scan_runs (profile_name, sequence);
+      CREATE INDEX IF NOT EXISTS scan_runs_profile_sequence_idx
+      ON scan_runs (profile_name, sequence);
 
-    CREATE TABLE IF NOT EXISTS scan_findings (
-      sequence INTEGER PRIMARY KEY AUTOINCREMENT,
-      scan_id TEXT NOT NULL,
-      finding_id TEXT NOT NULL,
-      kind TEXT NOT NULL,
-      severity TEXT NOT NULL,
-      title TEXT NOT NULL,
-      evidence TEXT NOT NULL,
-      object_ids_json TEXT NOT NULL,
-      FOREIGN KEY (scan_id) REFERENCES scan_runs(id) ON DELETE CASCADE
-    );
+      CREATE TABLE IF NOT EXISTS scan_findings (
+        sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+        scan_id TEXT NOT NULL,
+        finding_id TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        severity TEXT NOT NULL,
+        title TEXT NOT NULL,
+        evidence TEXT NOT NULL,
+        object_ids_json TEXT NOT NULL,
+        FOREIGN KEY (scan_id) REFERENCES scan_runs(id) ON DELETE CASCADE
+      );
 
-    CREATE UNIQUE INDEX IF NOT EXISTS scan_findings_scan_id_finding_id_idx
-    ON scan_findings (scan_id, finding_id);
+      CREATE UNIQUE INDEX IF NOT EXISTS scan_findings_scan_id_finding_id_idx
+      ON scan_findings (scan_id, finding_id);
 
-    CREATE INDEX IF NOT EXISTS scan_findings_scan_id_idx
-    ON scan_findings (scan_id);
+      CREATE INDEX IF NOT EXISTS scan_findings_scan_id_idx
+      ON scan_findings (scan_id);
 
-    CREATE TABLE IF NOT EXISTS app_settings (
-      key TEXT PRIMARY KEY,
-      value TEXT NOT NULL,
-      updated_at TEXT NOT NULL
-    );
+      CREATE TABLE IF NOT EXISTS app_settings (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+    `);
+  }
 
-    PRAGMA user_version = 1;
-  `);
+  if (version < 2) {
+    database.exec(`
+      CREATE TABLE IF NOT EXISTS fix_queue_entries (
+        sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+        id TEXT NOT NULL UNIQUE,
+        scan_id TEXT NOT NULL,
+        preview_token TEXT NOT NULL,
+        status TEXT NOT NULL,
+        selection_json TEXT NOT NULL,
+        actions_json TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        last_applied_at TEXT,
+        FOREIGN KEY (scan_id) REFERENCES scan_runs(id) ON DELETE CASCADE
+      );
+
+      CREATE UNIQUE INDEX IF NOT EXISTS fix_queue_entries_scan_id_preview_token_idx
+      ON fix_queue_entries (scan_id, preview_token);
+
+      CREATE INDEX IF NOT EXISTS fix_queue_entries_scan_sequence_idx
+      ON fix_queue_entries (scan_id, sequence);
+    `);
+  }
+
+  database.exec(`PRAGMA user_version = ${currentSchemaVersion};`);
 }
 
 function createDatabaseClient(databasePath: string) {
@@ -357,6 +410,7 @@ function createDatabaseClient(databasePath: string) {
   const db = drizzle(callback, {
     schema: {
       appSettingsTable,
+      fixQueueEntriesTable,
       profilesTable,
       scanFindingsTable,
       scanRunsTable,
@@ -418,6 +472,17 @@ function toScanRun(row: ScanRunRow, findings: Finding[]): ScanRun {
   };
 }
 
+function toFixQueueEntry(row: FixQueueEntryRow): FixQueueEntry {
+  const lastAppliedAt = resolveOptionalString(row.lastAppliedAt);
+
+  return {
+    createdAt: row.createdAt,
+    id: row.id,
+    ...(lastAppliedAt ? {lastAppliedAt} : {}),
+    status: row.status,
+  };
+}
+
 function buildDiffSummary(
   currentFindings: Finding[],
   previousFindings: Finding[],
@@ -466,19 +531,141 @@ function createFixSelection(actions: FixAction[]): FixSelection {
   };
 }
 
-function createPreviewToken(scanId: string, actions: FixAction[]): string {
-  const canonicalActions = [...actions].sort((left, right) =>
-    left.id.localeCompare(right.id),
-  );
+function createPreviewToken(): string {
+  return `preview-${randomUUID()}`;
+}
 
-  return createHash('sha256')
-    .update(
-      JSON.stringify({
-        actions: canonicalActions,
-        scanId,
-      }),
+function createQueueEntryId(): string {
+  return `queue-${randomUUID()}`;
+}
+
+function createScanExportBundle(scan: ScanDetail): ScanExportBundle {
+  return {
+    actions: createFixActions(scan.inventory, scan.findings),
+    diffSummary: scan.diffSummary,
+    findings: scan.findings,
+    generatedAt: new Date().toISOString(),
+    scan: {
+      createdAt: scan.createdAt,
+      id: scan.id,
+      inventory: scan.inventory,
+      profileName: scan.profileName,
+    },
+  };
+}
+
+function formatLineItemList(
+  label: string,
+  values: string[],
+  emptyLabel = 'None',
+): string {
+  return `- ${label}: ${values.length > 0 ? values.join(', ') : emptyLabel}`;
+}
+
+export function renderScanExportMarkdown(bundle: ScanExportBundle): string {
+  const lines = [
+    '# Home Assistant Repair Report',
+    '',
+    `Generated: ${bundle.generatedAt}`,
+    `Scan ID: ${bundle.scan.id}`,
+    `Profile: ${bundle.scan.profileName ?? 'No profile'}`,
+    `Scanned at: ${bundle.scan.createdAt}`,
+    `Inventory source: ${bundle.scan.inventory.source}`,
+    '',
+    '## Diff Summary',
+    `- Previous scan: ${bundle.diffSummary.previousScanId ?? 'None'}`,
+    `- Regressed count: ${bundle.diffSummary.regressedCount}`,
+    formatLineItemList(
+      'Regressed finding IDs',
+      bundle.diffSummary.regressedFindingIds,
+    ),
+    `- Resolved count: ${bundle.diffSummary.resolvedCount}`,
+    formatLineItemList(
+      'Resolved finding IDs',
+      bundle.diffSummary.resolvedFindingIds,
+    ),
+    `- Unchanged count: ${bundle.diffSummary.unchangedCount}`,
+    formatLineItemList(
+      'Unchanged finding IDs',
+      bundle.diffSummary.unchangedFindingIds,
+    ),
+    '',
+    '## Findings',
+  ];
+
+  if (bundle.findings.length === 0) {
+    lines.push('No findings recorded for this scan.', '');
+  } else {
+    for (const finding of bundle.findings) {
+      lines.push(
+        `### ${finding.title}`,
+        `- ID: ${finding.id}`,
+        `- Kind: ${finding.kind}`,
+        `- Severity: ${finding.severity}`,
+        `- Evidence: ${finding.evidence}`,
+        formatLineItemList('Objects', finding.objectIds),
+        '',
+      );
+    }
+  }
+
+  lines.push('## Fix Actions');
+
+  if (bundle.actions.length === 0) {
+    lines.push('No fix actions generated for this scan.');
+    return lines.join('\n');
+  }
+
+  for (const action of bundle.actions) {
+    lines.push(
+      '',
+      `### ${action.title}`,
+      `- Action ID: ${action.id}`,
+      `- Finding ID: ${action.findingId}`,
+      `- Kind: ${action.kind}`,
+      `- Risk: ${action.risk}`,
+      `- Intent: ${action.intent}`,
+      `- Rationale: ${action.rationale}`,
+      `- Requires confirmation: ${action.requiresConfirmation ? 'yes' : 'no'}`,
+      formatLineItemList(
+        'Targets',
+        action.targets.map((target) => `${target.label} [${target.kind}]`),
+      ),
+      formatLineItemList(
+        'Edits',
+        action.edits.map(
+          (edit) =>
+            `${edit.summary} (${edit.fieldPath}: ${edit.before ?? 'null'} -> ${edit.after ?? 'null'})`,
+        ),
+      ),
+      formatLineItemList('Warnings', action.warnings),
+      formatLineItemList('Steps', action.steps),
+    );
+
+    for (const artifact of action.artifacts) {
+      lines.push(
+        `- Artifact: ${artifact.label} (${artifact.kind})`,
+        '```diff',
+        artifact.content,
+        '```',
+      );
+    }
+  }
+
+  return lines.join('\n');
+}
+
+function hasExactActionSelection(
+  expectedActionIds: string[],
+  receivedActionIds: string[],
+): boolean {
+  return (
+    expectedActionIds.length === receivedActionIds.length &&
+    expectedActionIds.every(
+      (expectedActionId, index) =>
+        expectedActionId === receivedActionIds[index],
     )
-    .digest('hex');
+  );
 }
 
 async function maybeInsertRows<T>(
@@ -663,10 +850,7 @@ export async function createRepairService(
     return selected;
   }
 
-  function requireSelectedActions(
-    actions: FixAction[],
-    actionIds: string[],
-  ): FixAction[] {
+  function requireSelectedActionIds(actionIds: string[]) {
     if (actionIds.length === 0) {
       throw createServiceError(
         'action_selection_required',
@@ -674,28 +858,24 @@ export async function createRepairService(
         'Select at least one reviewed action before apply.',
       );
     }
-
-    const requestedIds = new Set(actionIds);
-    const selected = actions.filter((action) => requestedIds.has(action.id));
-
-    if (selected.length !== requestedIds.size) {
-      const foundIds = new Set(selected.map((action) => action.id));
-      const missing = [...requestedIds].filter(
-        (actionId) => !foundIds.has(actionId),
-      );
-      throw createServiceError(
-        'action_not_found',
-        400,
-        `Unknown action ids: ${missing.join(', ')}`,
-      );
-    }
-
-    return selected;
   }
 
-  async function getFixActionsForScan(scanId: string): Promise<FixAction[]> {
-    const scan = await requireScanDetail(scanId);
-    return createFixActions(scan.inventory, scan.findings);
+  async function getFixQueueEntryRow(
+    scanId: string,
+    previewToken: string,
+  ): Promise<FixQueueEntryRow | undefined> {
+    const [row] = await db
+      .select()
+      .from(fixQueueEntriesTable)
+      .where(
+        and(
+          eq(fixQueueEntriesTable.scanId, scanId),
+          eq(fixQueueEntriesTable.previewToken, previewToken),
+        ),
+      )
+      .limit(1);
+
+    return row;
   }
 
   async function resolveRequestedProfileName(
@@ -781,11 +961,30 @@ export async function createRepairService(
     const scan = await requireScanDetail(request.scanId);
     const actions = createFixActions(scan.inventory, findings);
     const selection = createFixSelection(actions);
+    const createdAt = new Date().toISOString();
+    const previewToken = createPreviewToken();
+    const queue = {
+      createdAt,
+      id: createQueueEntryId(),
+      status: 'pending_review' as const,
+    };
+
+    await db.insert(fixQueueEntriesTable).values({
+      actionsJson: JSON.stringify(actions),
+      createdAt,
+      id: queue.id,
+      lastAppliedAt: null,
+      previewToken,
+      scanId: request.scanId,
+      selectionJson: JSON.stringify(selection),
+      status: queue.status,
+    });
 
     return {
       actions,
-      generatedAt: new Date().toISOString(),
-      previewToken: createPreviewToken(request.scanId, actions),
+      generatedAt: createdAt,
+      previewToken,
+      queue,
       scanId: request.scanId,
       selection,
     };
@@ -808,16 +1007,14 @@ export async function createRepairService(
       );
     }
 
-    const selectedActions = requireSelectedActions(
-      await getFixActionsForScan(request.scanId),
-      request.actionIds,
-    );
-    const expectedPreviewToken = createPreviewToken(
+    requireSelectedActionIds(request.actionIds);
+
+    const queueEntryRow = await getFixQueueEntryRow(
       request.scanId,
-      selectedActions,
+      request.previewToken,
     );
 
-    if (expectedPreviewToken !== request.previewToken) {
+    if (!queueEntryRow) {
       throw createServiceError(
         'preview_mismatch',
         409,
@@ -825,13 +1022,39 @@ export async function createRepairService(
       );
     }
 
-    const selection = createFixSelection(selectedActions);
+    const selection = parseJson<FixSelection>(queueEntryRow.selectionJson);
+
+    if (!hasExactActionSelection(selection.actionIds, request.actionIds)) {
+      throw createServiceError(
+        'preview_mismatch',
+        409,
+        'The requested dry-run actions do not match the reviewed preview token. Generate a new preview before applying.',
+      );
+    }
+
+    const appliedAt = new Date().toISOString();
+
+    await db
+      .update(fixQueueEntriesTable)
+      .set({
+        lastAppliedAt: appliedAt,
+        status: 'dry_run_applied',
+      })
+      .where(eq(fixQueueEntriesTable.id, queueEntryRow.id));
+
+    const actions = parseJson<FixAction[]>(queueEntryRow.actionsJson);
+    const queue = toFixQueueEntry({
+      ...queueEntryRow,
+      lastAppliedAt: appliedAt,
+      status: 'dry_run_applied',
+    });
 
     return {
-      actions: selectedActions,
+      actions,
       appliedCount: 0,
       mode: 'dry_run' as const,
-      previewToken: expectedPreviewToken,
+      previewToken: queueEntryRow.previewToken,
+      queue,
       scanId: request.scanId,
       selection,
     };
@@ -876,16 +1099,7 @@ export async function createRepairService(
 
     const scan = await requireScanDetail(resolvedScanId);
 
-    return {
-      diffSummary: scan.diffSummary,
-      findings: scan.findings,
-      scan: {
-        createdAt: scan.createdAt,
-        id: scan.id,
-        inventory: scan.inventory,
-        profileName: scan.profileName,
-      },
-    };
+    return createScanExportBundle(scan);
   }
 
   async function getScan(scanId: string) {

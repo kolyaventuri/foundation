@@ -67,6 +67,10 @@ function formatTimestamp(value: string): string {
   return new Date(value).toLocaleString();
 }
 
+function formatQueueStatus(value: string): string {
+  return value.replaceAll('_', ' ');
+}
+
 function toggleItem(items: string[], value: string): string[] {
   return items.includes(value)
     ? items.filter((item) => item !== value)
@@ -94,6 +98,7 @@ export function App() {
   const [preview, setPreview] = useState<FixPreviewResponse>();
   const [applyResult, setApplyResult] = useState<FixApplyResponse>();
   const [reviewConfirmed, setReviewConfirmed] = useState(false);
+  const activeQueue = applyResult?.queue ?? preview?.queue;
 
   async function loadScan(scanId: string) {
     const response = await fetchJson<ScanReadResponse>(`/api/scans/${scanId}`);
@@ -500,9 +505,16 @@ export function App() {
             </p>
           </div>
           {preview && (
-            <span className="rounded-full border border-black/10 bg-ink-strong/5 px-3 py-2 text-xs font-semibold tracking-[0.16em] text-ink-soft uppercase">
-              token {preview.previewToken.slice(0, 12)}
-            </span>
+            <div className="flex flex-wrap gap-2">
+              <span className="rounded-full border border-black/10 bg-ink-strong/5 px-3 py-2 text-xs font-semibold tracking-[0.16em] text-ink-soft uppercase">
+                token {preview.previewToken.slice(0, 12)}
+              </span>
+              {activeQueue && (
+                <span className="rounded-full border border-black/10 bg-ink-strong/5 px-3 py-2 text-xs font-semibold tracking-[0.16em] text-ink-soft uppercase">
+                  queue {formatQueueStatus(activeQueue.status)}
+                </span>
+              )}
+            </div>
           )}
         </div>
 
@@ -518,6 +530,23 @@ export function App() {
               <p className="mt-2">
                 Reviewed findings: {preview.selection.findingIds.join(', ')}
               </p>
+              {activeQueue && (
+                <>
+                  <p className="mt-2">
+                    Queue {activeQueue.id} is{' '}
+                    <span className="font-semibold text-ink-strong">
+                      {formatQueueStatus(activeQueue.status)}
+                    </span>{' '}
+                    since {formatTimestamp(activeQueue.createdAt)}
+                  </p>
+                  {activeQueue.lastAppliedAt && (
+                    <p className="mt-2">
+                      Last dry-run apply:{' '}
+                      {formatTimestamp(activeQueue.lastAppliedAt)}
+                    </p>
+                  )}
+                </>
+              )}
             </div>
 
             {preview.actions.map((action) => (
@@ -687,13 +716,19 @@ export function App() {
             </article>
             <article className="rounded-[1.1rem] border border-success/20 bg-white/75 px-4 py-3">
               <p className="text-xs uppercase tracking-[0.16em] text-ink-soft">
-                Preview token
+                Queue status
               </p>
               <p className="mt-2 font-semibold text-ink-strong">
-                {applyResult.previewToken.slice(0, 12)}
+                {formatQueueStatus(applyResult.queue.status)}
               </p>
             </article>
           </div>
+          {applyResult.queue.lastAppliedAt && (
+            <p className="mt-4 text-sm leading-6 text-ink-soft">
+              Queue {applyResult.queue.id} last ran a dry-run apply at{' '}
+              {formatTimestamp(applyResult.queue.lastAppliedAt)}.
+            </p>
+          )}
         </section>
       )}
 

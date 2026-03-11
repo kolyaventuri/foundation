@@ -296,6 +296,9 @@ describe('api server', () => {
       const previewBody = parseJson<FixPreviewResponse>(previewResponse.body);
       expect(previewBody.actions).toHaveLength(2);
       expect(previewBody.previewToken).toEqual(expect.any(String));
+      expect(previewBody.queue.createdAt).toEqual(expect.any(String));
+      expect(previewBody.queue.id).toEqual(expect.any(String));
+      expect(previewBody.queue.status).toBe('pending_review');
       expect(previewBody.selection.actionIds).toHaveLength(2);
       const previewAction = previewBody.actions[0];
       expect(previewAction).toBeDefined();
@@ -334,15 +337,29 @@ describe('api server', () => {
 
       expect(applyResponse.statusCode).toBe(200);
       const applyBody = parseJson<FixApplyResponse>(applyResponse.body);
-      expect(applyBody).toMatchObject({
-        appliedCount: 0,
-        mode: 'dry_run',
-        previewToken: previewBody.previewToken,
-        scanId: secondScan.scan.id,
-        selection: previewBody.selection,
-      });
+      expect(applyBody.appliedCount).toBe(0);
+      expect(applyBody.mode).toBe('dry_run');
+      expect(applyBody.previewToken).toBe(previewBody.previewToken);
+      expect(applyBody.queue.id).toBe(previewBody.queue.id);
+      expect(applyBody.queue.lastAppliedAt).toEqual(expect.any(String));
+      expect(applyBody.queue.status).toBe('dry_run_applied');
+      expect(applyBody.scanId).toBe(secondScan.scan.id);
+      expect(applyBody.selection).toEqual(previewBody.selection);
 
       const rejectedApply = await secondServer.inject({
+        method: 'POST',
+        payload: {
+          actionIds: [...previewBody.selection.actionIds].reverse(),
+          dryRun: true,
+          previewToken: previewBody.previewToken,
+          scanId: secondScan.scan.id,
+        },
+        url: '/api/fixes/apply',
+      });
+
+      expect(rejectedApply.statusCode).toBe(409);
+
+      const rejectedToken = await secondServer.inject({
         method: 'POST',
         payload: {
           actionIds: previewBody.selection.actionIds,
@@ -353,7 +370,7 @@ describe('api server', () => {
         url: '/api/fixes/apply',
       });
 
-      expect(rejectedApply.statusCode).toBe(409);
+      expect(rejectedToken.statusCode).toBe(409);
     } finally {
       await secondServer.close();
     }

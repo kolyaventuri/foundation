@@ -12,7 +12,7 @@ export function createFrameworkSummary(): FrameworkSummary {
     priorities: [
       'Replace the mock Home Assistant client with a real authenticated websocket + REST adapter.',
       'Expand deterministic rule packs for naming, area coverage, and assistant exposure.',
-      'Move from dry-run previews into guarded live apply flows and richer exports.',
+      'Move from dry-run previews into guarded live apply flows backed by reviewed queue snapshots.',
     ],
     surfaces: [
       {
@@ -20,28 +20,28 @@ export function createFrameworkSummary(): FrameworkSummary {
         name: 'API shell',
         state: 'ready',
         summary:
-          'Fastify now exposes persisted profile, scan, history, preview, and dry-run apply endpoints.',
+          'Fastify now exposes persisted profile, scan, history, queue-backed preview, and dry-run apply endpoints.',
       },
       {
         id: 'web',
         name: 'Guided UI shell',
         state: 'ready',
         summary:
-          'React + Vite render the shared framework model and are ready for live scan workflows.',
+          'React + Vite render queue-aware scan review flows with explicit preview and dry-run confirmation steps.',
       },
       {
         id: 'cli',
         name: 'CLI path',
         state: 'ready',
         summary:
-          'The CLI now manages saved profiles and local scan, findings, dry-run apply, and export flows.',
+          'The CLI now manages saved profiles and local scan, findings, queue-backed dry-run apply, and markdown/json export flows.',
       },
       {
         id: 'rules',
         name: 'Repair engine',
         state: 'ready',
         summary:
-          'Deterministic findings now persist with diff summaries and stable dry-run preview actions.',
+          'Deterministic findings now persist with diff summaries, reviewed preview snapshots, and audit-ready exports.',
       },
     ],
     tagline:
