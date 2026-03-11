@@ -49,11 +49,15 @@ async function fetchJson<T>(
   input: RequestInfo,
   init?: RequestInit,
 ): Promise<T> {
+  const headers = new Headers(init?.headers);
+
+  if (init?.body && !headers.has('content-type')) {
+    headers.set('content-type', 'application/json');
+  }
+
   const response = await fetch(input, {
-    headers: {
-      'content-type': 'application/json',
-    },
     ...init,
+    headers,
   });
 
   if (!response.ok) {

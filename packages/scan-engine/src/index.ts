@@ -1,4 +1,3 @@
-import {randomUUID} from 'node:crypto';
 import type {
   Finding,
   FixAction,
@@ -6,6 +5,16 @@ import type {
   InventoryGraph,
   ScanRun,
 } from '@ha-repair/contracts';
+
+function createScanId(): string {
+  const uuid = globalThis.crypto?.randomUUID?.();
+
+  if (uuid) {
+    return `scan-${uuid}`;
+  }
+
+  return `scan-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+}
 
 export function createFrameworkSummary(): FrameworkSummary {
   return {
@@ -329,7 +338,7 @@ export function runScan(
   return {
     createdAt: new Date().toISOString(),
     findings,
-    id: `scan-${randomUUID()}`,
+    id: createScanId(),
     inventory,
     profileName,
   };
