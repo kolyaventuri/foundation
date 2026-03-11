@@ -1,18 +1,28 @@
-# Home Assistant Repair Console Plan
+# Home Assistant Audit, Repair, and Enhance Plan
 
-## Product intent
-Build a Docker-first, standalone, local-first TypeScript app with two entrypoints:
+## Product direction
+Build a Docker-first, standalone, local-first TypeScript app with two operator surfaces:
 
-- a local web UI for guided cleanup
-- a CLI for scans, exports, and approved fixes
+- a local web UI for guided review, repair, and improvement
+- a CLI for scans, exports, checkpoints, and approved fix workflows
 
-The application should treat deterministic checks as the source of truth, persist scan history locally in SQLite, and keep LLM usage optional for enrichment only.
+The product is organized around three equal pillars:
+
+- **Audit**: deterministic and later AI-assisted analysis of Home Assistant inventory, config, and behavioral structure
+- **Repair**: explainable, reviewable, capability-aware fixes with explicit preview and confirmation
+- **Enhance**: cleanup, refactor, naming, and design recommendations that improve long-term maintainability
+
+Deterministic checks remain the source of truth. Scan history stays local in SQLite. LLM usage stays optional and non-authoritative.
 
 ## Guiding principles
 - **Methodical first**: every finding needs reproducible evidence and deterministic logic.
 - **Trust before writes**: fixes stay read-only until the user explicitly selects and confirms them after review.
 - **Capability-aware**: older Home Assistant installs must degrade gracefully with explicit skipped checks.
 - **Local-first**: no SaaS dependency for core functionality.
+
+## Active implementation specs
+- [docs/home-assistant-audit-utility.md](./docs/home-assistant-audit-utility.md): detailed audit-engine expansion plan, including target schemas, checks, clustering, and summary outputs
+- [docs/running-with-home-assistant.md](./docs/running-with-home-assistant.md): operator guide for running the current live read-only workflow against a real Home Assistant instance
 
 ## Safety contract
 - Findings are read-only and advisory by default across both the web UI and the CLI.
@@ -23,12 +33,15 @@ The application should treat deterministic checks as the source of truth, persis
 - Apply must remain a separate confirmation step from preview, and the final applied payload must match the reviewed preview exactly.
 - Prefer export, patch, or dry-run workflows over live mutation whenever possible.
 
-## v1 Scope
-- Inventory and hygiene coverage across entities, devices, areas, labels/floors where supported.
-- Scene + automation target validation.
-- Assistant exposure checks for Assist, Alexa, and HomeKit where data sources permit.
+## v1 scope
+- Local-first scans and history over Home Assistant inventory plus optional read-only config analysis
+- Audit coverage for naming, stale objects, area/label/floor hygiene, target validation, and assistant exposure issues
+- Guided repair workbench with dry-run previews and conservative, explicit apply flows
+- Audit-driven cleanup and enhancement recommendations that can later expand into richer refactor guidance
 
-## Public interfaces
+## Stable interfaces and anchors
+Current operator surfaces stay stable while scan depth grows.
+
 ### CLI
 - `ha-repair connect test`
 - `ha-repair scan [--profile] [--mode mock|live] [--deep] [--llm-provider]`
@@ -48,95 +61,67 @@ The application should treat deterministic checks as the source of truth, persis
 - `POST /api/fixes/apply`
 - `GET /api/history`
 
-## Domain model anchors
-Core shared types that should remain stable and versioned:
-
+### Shared contract anchors
 - `ConnectionProfile`
 - `CapabilitySet`
 - `InventoryGraph`
 - `Finding`
 - `FixAction`
-- `FixPreview`
+- `FixPreviewRequest`
+- `FixPreviewResponse`
 - `ScanRun`
-- `ProviderConfig`
 
-## Engineering roadmap
+The detailed audit spec expands scan content, not command names or route shapes.
 
-### Current status
-- Phase A is complete.
-- Phase B is complete for the current local-first, mock-backed workflow.
-- Phase C is in progress.
-- Delivered in Phase C:
-  - live read-only scan mode over Home Assistant REST + WebSocket
-  - persisted scan passes, notes, enrichment metadata, fingerprints, and backup checkpoints
-  - read-only YAML config parsing with bounded include resolution
-  - additional deterministic findings for area coverage, label hygiene, invalid automation/scene targets, and assistant exposure bloat
-  - optional Ollama/OpenAI enrichment that does not change deterministic findings
-- Remaining Phase C follow-up:
-  - do a dedicated performance pass for larger Home Assistant inventories
+## Current platform status
+The repo already has a working local-first foundation for audit, repair, and enhancement workflows.
 
-### Phase A — Foundation and first vertical slice (complete)
-Deliver the smallest useful end-to-end flow with deterministic value.
+### Delivered
+- Workspace structure is in place across `apps/web`, `apps/api`, and shared packages for `ha-client`, `scan-engine`, `contracts`, `storage`, `llm`, and `cli`.
+- Live read-only scan mode is implemented over Home Assistant REST + WebSocket, alongside mock mode.
+- Scan runs persist findings, passes, notes, fingerprints, enrichment metadata, history diffs, and optional backup checkpoints in SQLite.
+- Deep scan mode can read `configuration.yaml` plus supported include patterns from a bounded config root.
+- Deterministic findings already cover duplicate names, stale entities, orphaned entity/device links, missing area assignments, missing floor assignments, dangling labels, invalid automation targets, invalid scene targets, and assistant exposure bloat.
+- The web workbench and CLI already support review-oriented dry-run repair flows on top of stored scan data.
+- Ollama/OpenAI enrichment exists as optional metadata and does not alter base findings.
 
-1. Shared contracts and initial scan model
-   - Define capability, inventory, finding, and scan contracts.
-   - Keep scan output serializable and versionable.
-2. Connection and capability probe baseline
-   - Keep mocked connection checks in place while the API shape stabilizes.
-   - Return capability posture explicitly.
-3. Deterministic starter rules
-   - Duplicate/ambiguous names.
-   - Orphaned entity-device relationships.
-   - Stale entities.
-4. Minimal API + CLI scan workflow
-   - Start scan.
-   - Fetch scan by id.
-   - Fetch findings by scan id.
-   - Persist scans and history locally in SQLite.
-5. Test baseline
-   - Unit tests for capability probe behavior.
-   - Unit tests for deterministic rule outcomes.
+### Current follow-through
+- Performance work for larger Home Assistant inventories is still needed.
+- Coverage should expand for live-mode connection tests and deep-scan backup/config paths.
+- The audit engine should now broaden from current inventory hygiene checks into richer behavioral and structural analysis.
 
-### Phase B — Trust, previews, and persistence (complete)
-1. SQLite persistence layer and migrations.
-2. Fix queue state model and preview payloads.
-3. `--dry-run` apply flow with explainable evidence and no live mutation.
-4. Export reports in markdown/json for auditability.
-5. History diff model: resolved/regressed/unchanged findings.
+## Forward workstreams
+### 1. Audit expansion
+- Grow the shared inventory model beyond entities, automations, and scenes to also cover scripts, helpers, templates, config modules, and graph-derived relationships.
+- Evolve findings from the current minimal shape into richer audit records with categories, confidence, structured evidence, recommendations, scores, tags, and related findings.
+- Add install-level scores, intent clusters, conflict hotspots, cleanup candidates, and refactor opportunities to scan outputs while staying compatible with the existing scan/history/workbench flow.
+- Use [docs/home-assistant-audit-utility.md](./docs/home-assistant-audit-utility.md) as the implementation spec for the next wave of deterministic audit checks.
 
-### Phase C — Deep analysis and enrichment (in progress)
-1. Completed
-   - Read-only live discovery now uses Home Assistant WebSocket + REST.
-   - Scan runs persist pass timings, scan notes, enrichment state, fingerprints, and optional backup checkpoints.
-   - Read-only config parsing resolves `configuration.yaml` plus supported include patterns within the configured root.
-   - Additional rule packs cover room coverage, label hygiene, invalid automation/scene targets, and assistant exposure bloat.
-   - Ollama/OpenAI enrichment is available as non-authoritative scan metadata.
-2. Remaining
-   - Performance work for large inventories is still pending.
+### 2. Repair hardening
+- Keep repair flows capability-aware, explicit, and preview-first as audit coverage expands.
+- Align future fix actions and repair plans to the richer audit findings without weakening the existing safety contract.
+- Preserve dry-run, export, and review surfaces as the default operator path.
 
-## Implementation notes
-- Workspace shape stays as `apps/web`, `apps/api`, and shared packages (`ha-client`, `scan-engine`, `contracts`, `llm`, `cli`).
-- Discovery should use Home Assistant WebSocket + REST once Phase A API contracts settle.
-- The current Home Assistant adapter remains mock-backed while the persisted scan, preview, export, and dry-run apply flows stabilize.
-- Live writes remain capability-gated, conservative, and blocked behind explicit review + confirmation in v1.
+### 3. Enhancement workflows
+- Turn audit output into clearer cleanup, refactor, and architectural recommendations.
+- Add smarter summaries and clustering that help operators consolidate duplicate intent, reduce fragile logic, and improve naming consistency.
+- Keep enhancement guidance evidence-backed so it can be reviewed before any follow-on change is made.
+
+### 4. Platform follow-through
+- Maintain serializable, versioned contracts across the API, CLI, storage, and UI.
+- Improve fixture coverage and end-to-end confidence for scan, checkpoint, findings, preview, and export workflows.
+- Keep live mutation conservative and gated behind explicit review even as repair capabilities grow.
 
 ## Validation strategy
-- Run scans against mocked Home Assistant inventory fixtures.
-- Add focused tests for live capability probing, partial registry failures, and read-only guarantees.
-- Add focused tests for config parsing includes, missing files, parse errors, permission denial, and root-bounded traversal.
-- Verify deterministic findings from fixture-based tests.
-- Verify API scan lifecycle + backup checkpoint endpoints.
-- Verify CLI scan + findings + checkpoint loop.
-- Verify web rendering for scan notes, pass state, backup checkpoint state, and the continued absence of live apply.
-- Ensure LLM mode changes enrichment only, not base findings.
+- Run scans against mocked Home Assistant fixtures and live read-only environments.
+- Add focused tests for capability probing, partial registry failures, config include resolution, permission denial, and root-bounded traversal.
+- Verify deterministic findings and future audit graph outputs with fixture-based rule tests.
+- Verify API scan lifecycle, findings retrieval, backup checkpoint endpoints, and workbench flows against persisted scans.
+- Verify CLI scan, findings, checkpoint, export, and dry-run repair loops.
+- Ensure enrichment changes metadata only and never changes deterministic findings.
 
 ## Assumptions
-- v1 is single-user and local-only.
-- Some Home Assistant capabilities may be absent and should render as skipped.
-- YAML assistant configuration analysis requires optional read-only config directory access.
-
-## Primary sources
-- https://developers.home-assistant.io/docs/api/websocket
-- https://www.home-assistant.io/integrations/alexa.smart_home/
-- https://www.home-assistant.io/integrations/homekit/
-- https://developers.home-assistant.io/docs/entity_registry_disabled_by
+- v1 remains single-user and local-only.
+- Some Home Assistant capabilities may be absent and should render as skipped rather than failing the scan.
+- YAML/config analysis requires optional read-only config directory access.
+- Audit, repair, and enhancement remain equal product pillars even when detailed implementation specs focus on one pillar at a time.
