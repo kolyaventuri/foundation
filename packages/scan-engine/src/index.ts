@@ -1,4 +1,9 @@
-import type {FrameworkSummary} from '@ha-repair/contracts';
+import type {
+  Finding,
+  FrameworkSummary,
+  InventoryGraph,
+  ScanRun,
+} from '@ha-repair/contracts';
 
 export function createFrameworkSummary(): FrameworkSummary {
   return {
@@ -40,5 +45,69 @@ export function createFrameworkSummary(): FrameworkSummary {
     tagline:
       'A local-first framework for deep Home Assistant inventory repair, cleanup, and guided improvement.',
     title: 'Home Assistant Repair Console',
+  };
+}
+
+function findDuplicateNameFindings(inventory: InventoryGraph): Finding[] {
+  const names = new Map<string, string[]>();
+
+  for (const entity of inventory.entities) {
+    const matches = names.get(entity.friendlyName) ?? [];
+    matches.push(entity.entityId);
+    names.set(entity.friendlyName, matches);
+  }
+
+  return [...names.entries()]
+    .filter(([, entityIds]) => entityIds.length > 1)
+    .map(([name, entityIds]) => ({
+      evidence: `Found ${entityIds.length} entities named "${name}".`,
+      id: `duplicate_name:${name}`,
+      kind: 'duplicate_name',
+      objectIds: entityIds,
+      severity: 'medium',
+      title: `Duplicate name: ${name}`,
+    }));
+}
+
+function findOrphanedDeviceLinks(inventory: InventoryGraph): Finding[] {
+  const deviceIds = new Set(inventory.devices.map((device) => device.deviceId));
+
+  return inventory.entities
+    .filter((entity) => entity.deviceId && !deviceIds.has(entity.deviceId))
+    .map((entity) => ({
+      evidence: `Entity ${entity.entityId} references missing device ${entity.deviceId}.`,
+      id: `orphaned_entity_device:${entity.entityId}`,
+      kind: 'orphaned_entity_device',
+      objectIds: [entity.entityId, entity.deviceId!],
+      severity: 'high',
+      title: `Orphaned entity/device link for ${entity.entityId}`,
+    }));
+}
+
+function findStaleEntities(inventory: InventoryGraph): Finding[] {
+  return inventory.entities
+    .filter((entity) => entity.isStale)
+    .map((entity) => ({
+      evidence: `Entity ${entity.entityId} is marked stale by inventory collection.`,
+      id: `stale_entity:${entity.entityId}`,
+      kind: 'stale_entity',
+      objectIds: [entity.entityId],
+      severity: 'low',
+      title: `Stale entity ${entity.entityId}`,
+    }));
+}
+
+export function runScan(inventory: InventoryGraph): ScanRun {
+  const findings = [
+    ...findDuplicateNameFindings(inventory),
+    ...findOrphanedDeviceLinks(inventory),
+    ...findStaleEntities(inventory),
+  ];
+
+  return {
+    createdAt: new Date().toISOString(),
+    findings,
+    id: `scan-${Date.now().toString(36)}`,
+    inventory,
   };
 }

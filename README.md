@@ -8,9 +8,9 @@ Initial workspace scaffold for the Home Assistant repair console described in [P
 - `apps/web`: React + Vite UI for the guided cleanup workflow
 - `packages/contracts`: Shared domain and API contracts
 - `packages/ha-client`: Home Assistant connection and API abstraction
-- `packages/scan-engine`: Scan summary and issue-pack structure
+- `packages/scan-engine`: Deterministic scan execution and rule findings
 - `packages/llm`: LLM provider metadata and future provider adapters
-- `packages/cli`: CLI entrypoint for framework status and connection checks
+- `packages/cli`: CLI entrypoint for framework status and scan/findings loops
 
 ## Commands
 
@@ -25,10 +25,12 @@ Initial workspace scaffold for the Home Assistant repair console described in [P
 
 ## Current state
 
-This scaffold intentionally stops at the framework layer:
+Phase A is now started with a minimal deterministic vertical slice:
 
-- The API exposes health, framework summary, and a stubbed connection test
-- The web app renders the shared framework summary and fetches the API on load
-- The CLI exposes a framework status command and a mock connection test
-- The next implementation pass should add persistent storage, real Home Assistant auth, and the first deterministic scan rules
+- shared contracts now include capability, inventory, finding, and scan-run models
+- the Home Assistant client returns a mocked capability probe and a mock inventory fixture
+- the scan engine emits deterministic findings for duplicate names, stale entities, and orphaned entity-device links
+- the API now supports profile testing, creating scans, reading scans, reading findings, and listing local scan history
+- the CLI now supports API-backed `ha-repair scan` and `ha-repair findings [scanId]` for the Phase A scan loop
 
+The next implementation pass should add SQLite persistence, dry-run fix previews, and richer deterministic rule packs.
