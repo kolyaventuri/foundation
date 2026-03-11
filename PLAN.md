@@ -31,7 +31,8 @@ The application should treat deterministic checks as the source of truth, persis
 ## Public interfaces
 ### CLI
 - `ha-repair connect test`
-- `ha-repair scan [--profile] [--config-dir] [--llm-provider]`
+- `ha-repair scan [--profile] [--mode mock|live] [--deep] [--llm-provider]`
+- `ha-repair checkpoint [scan-id] [--download]`
 - `ha-repair findings [scan-id] [--format table|json|md]`
 - `ha-repair apply [fix-id...] --dry-run`
 - `ha-repair export [scan-id] [--format md|json]`
@@ -41,6 +42,8 @@ The application should treat deterministic checks as the source of truth, persis
 - `POST /api/scans`
 - `GET /api/scans/:id`
 - `GET /api/scans/:id/findings`
+- `GET /api/scans/:id/backup-checkpoint`
+- `POST /api/scans/:id/backup-checkpoint`
 - `POST /api/fixes/preview`
 - `POST /api/fixes/apply`
 - `GET /api/history`
@@ -62,7 +65,18 @@ Core shared types that should remain stable and versioned:
 ### Current status
 - Phase A is complete.
 - Phase B is complete for the current local-first, mock-backed workflow.
-- Phase C is the next active implementation pass.
+- Phase C is in progress.
+- Delivered in Phase C:
+  - live read-only scan mode over Home Assistant REST + WebSocket
+  - persisted scan passes, notes, enrichment metadata, fingerprints, and backup checkpoints
+  - read-only YAML config parsing with bounded include resolution
+  - additional deterministic findings for area coverage, label hygiene, invalid automation/scene targets, and assistant exposure bloat
+  - optional Ollama/OpenAI enrichment that does not change deterministic findings
+- Remaining Phase C follow-up:
+  - expose live mode through the public connection-test CLI/API surfaces
+  - add a floor-specific hygiene rule to match the labels/floors coverage goal explicitly
+  - complete the Phase C test matrix for live discovery, deep config parsing, skipped-check reporting, backup checkpoints, and the new web states
+  - do a dedicated performance pass for larger Home Assistant inventories
 
 ### Phase A — Foundation and first vertical slice (complete)
 Deliver the smallest useful end-to-end flow with deterministic value.
@@ -93,11 +107,18 @@ Deliver the smallest useful end-to-end flow with deterministic value.
 4. Export reports in markdown/json for auditability.
 5. History diff model: resolved/regressed/unchanged findings.
 
-### Phase C — Deep analysis and enrichment (next)
-1. Read-only deep mode parsing of HA config YAML files.
-2. Additional rule packs (room coverage, labels/floors, assistant context bloat).
-3. Provider adapters for Ollama/OpenAI as non-authoritative enrichment.
-4. Performance tuning for larger Home Assistant inventories.
+### Phase C — Deep analysis and enrichment (in progress)
+1. Completed
+   - Read-only live discovery now uses Home Assistant WebSocket + REST.
+   - Scan runs persist pass timings, scan notes, enrichment state, fingerprints, and optional backup checkpoints.
+   - Read-only config parsing resolves `configuration.yaml` plus supported include patterns within the configured root.
+   - Additional rule packs cover room coverage, label hygiene, invalid automation/scene targets, and assistant exposure bloat.
+   - Ollama/OpenAI enrichment is available as non-authoritative scan metadata.
+2. Remaining
+   - Public connection-test flows still need a live-mode option.
+   - Floor hygiene still needs its own explicit deterministic rule.
+   - Performance work for large inventories is still pending.
+   - Test coverage for the new live/deep/backup paths is still incomplete.
 
 ## Implementation notes
 - Workspace shape stays as `apps/web`, `apps/api`, and shared packages (`ha-client`, `scan-engine`, `contracts`, `llm`, `cli`).
@@ -107,9 +128,12 @@ Deliver the smallest useful end-to-end flow with deterministic value.
 
 ## Validation strategy
 - Run scans against mocked Home Assistant inventory fixtures.
+- Add focused tests for live capability probing, partial registry failures, and read-only guarantees.
+- Add focused tests for config parsing includes, missing files, parse errors, permission denial, and root-bounded traversal.
 - Verify deterministic findings from fixture-based tests.
-- Verify API scan lifecycle endpoints.
-- Verify CLI scan + findings loop.
+- Verify API scan lifecycle + backup checkpoint endpoints.
+- Verify CLI scan + findings + checkpoint loop.
+- Verify web rendering for scan notes, pass state, backup checkpoint state, and the continued absence of live apply.
 - Ensure LLM mode changes enrichment only, not base findings.
 
 ## Assumptions

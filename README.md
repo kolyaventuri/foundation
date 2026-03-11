@@ -38,13 +38,14 @@ This project is intentionally cautious about writes to Home Assistant.
 
 ## Current state
 
-Phase B is now in place with persisted local workflows:
+Phase C is partially in place with persisted local and live read-only workflows:
 
-- shared contracts now include persisted profiles, scan diffs, dry-run previews, and export bundle models
-- the Home Assistant client returns a mocked capability probe and a mock inventory fixture
-- the scan engine emits deterministic findings for duplicate names, stale entities, and orphaned entity-device links
-- the API now persists named profiles, scan runs, findings, history, diff summaries, and dry-run preview/apply responses in SQLite
-- the CLI now manages saved profiles and local `scan`, `findings`, `apply --dry-run`, and `export --format json` flows against the same SQLite database
+- shared contracts now include scan passes, scan notes, fingerprints, enrichment metadata, and optional backup checkpoints
+- the Home Assistant client now supports mock mode plus live read-only discovery over Home Assistant REST + WebSocket
+- deep scans can parse `configuration.yaml` plus supported include patterns from an optional read-only config root
+- the scan engine now emits deterministic findings for duplicate names, stale entities, orphaned links, missing area assignments, dangling labels, invalid automation/scene targets, and assistant exposure bloat
+- the API now persists named profiles, rich scan runs, backup checkpoint state, history, diff summaries, and dry-run preview/apply responses in SQLite
+- the CLI now manages saved profiles and `scan --mode/--deep/--llm-provider`, `checkpoint`, `findings`, `apply --dry-run`, and `export --format json` flows against the same SQLite database
 - migrations run automatically on startup and default to `./data/ha-repair.sqlite`, overridable with `HA_REPAIR_DB_PATH` or `--db-path`
 
-The next implementation pass should add real Home Assistant adapters, richer deterministic rule packs, and guarded live apply behavior.
+Remaining Phase C follow-up still includes live-mode connection tests, fuller coverage for the new live/deep/backup paths, a floor-specific hygiene rule, and a performance pass for larger Home Assistant inventories.
