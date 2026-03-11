@@ -24,6 +24,19 @@ Initial workspace scaffold for the Home Assistant repair console described in [P
 - `pnpm test`
 - `pnpm typecheck`
 
+## Run against a real Home Assistant instance
+
+See [docs/running-with-home-assistant.md](./docs/running-with-home-assistant.md) for the full operator walkthrough.
+
+Short version:
+
+- point the API and CLI at the same SQLite file with `HA_REPAIR_DB_PATH`
+- save and test a live Home Assistant profile through the CLI or API
+- create the live scan through the CLI or `POST /api/scans`
+- open the saved scan in the web app at `http://127.0.0.1:4173`
+
+Current limitation: the web app workbench can review persisted live scans, but its `Run scan` button still creates a mock scan. Live scan creation is CLI/API-driven right now.
+
 ## Safety Contract
 
 This project is intentionally cautious about writes to Home Assistant.
