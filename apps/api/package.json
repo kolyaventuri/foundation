@@ -7,6 +7,7 @@
     "@ha-repair/ha-client": "workspace:*",
     "@ha-repair/llm": "workspace:*",
     "@ha-repair/scan-engine": "workspace:*",
+    "@ha-repair/storage": "workspace:*",
     "fastify": "^5.2.1"
   },
   "scripts": {
@@ -14,4 +15,3 @@
     "typecheck": "tsc --project tsconfig.json --noEmit"
   }
 }
-

@@ -1,7 +1,15 @@
-import {afterEach, beforeEach, describe, expect, it} from 'vitest';
+import {mkdtempSync, rmSync} from 'node:fs';
+import {tmpdir} from 'node:os';
+import {join} from 'node:path';
+import {afterEach, describe, expect, it} from 'vitest';
 import type {FastifyInstance} from 'fastify';
 import type {
   ConnectionTestResponse,
+  FixApplyResponse,
+  FixPreviewResponse,
+  InventoryGraph,
+  ProfileListResponse,
+  ProfileReadResponse,
   ScanCreateResponse,
   ScanFindingsResponse,
   ScanHistoryResponse,
@@ -9,81 +17,313 @@ import type {
 } from '@ha-repair/contracts';
 import {createServer} from './server';
 
-let server: FastifyInstance;
+const temporaryDirectories: string[] = [];
+
+function createTempDatabasePath() {
+  const directory = mkdtempSync(join(tmpdir(), 'ha-repair-api-'));
+  temporaryDirectories.push(directory);
+  return join(directory, 'ha-repair.sqlite');
+}
 
 function parseJson<T>(value: string): T {
   return JSON.parse(value) as T;
 }
 
-beforeEach(() => {
-  server = createServer();
-});
+const baselineInventory: InventoryGraph = {
+  devices: [
+    {
+      deviceId: 'device.kitchen_light',
+      name: 'Kitchen Light',
+    },
+  ],
+  entities: [
+    {
+      deviceId: 'device.kitchen_light',
+      entityId: 'light.kitchen_light',
+      friendlyName: 'Kitchen Light',
+      isStale: false,
+    },
+    {
+      entityId: 'sensor.kitchen_light_power',
+      friendlyName: 'Kitchen Light',
+      isStale: true,
+    },
+    {
+      deviceId: 'device.ghost',
+      entityId: 'switch.orphaned_fan',
+      friendlyName: 'Orphaned Fan',
+      isStale: false,
+    },
+  ],
+  source: 'mock',
+};
 
-afterEach(async () => {
-  await server.close();
+const changedInventory: InventoryGraph = {
+  devices: [
+    {
+      deviceId: 'device.kitchen_light',
+      name: 'Kitchen Light',
+    },
+  ],
+  entities: [
+    {
+      deviceId: 'device.kitchen_light',
+      entityId: 'light.kitchen_light',
+      friendlyName: 'Kitchen Light',
+      isStale: false,
+    },
+    {
+      entityId: 'sensor.kitchen_light_power',
+      friendlyName: 'Kitchen Light',
+      isStale: false,
+    },
+    {
+      deviceId: 'device.ghost',
+      entityId: 'switch.new_orphan',
+      friendlyName: 'New Orphan',
+      isStale: false,
+    },
+  ],
+  source: 'mock',
+};
+
+afterEach(() => {
+  for (const directory of temporaryDirectories.splice(0)) {
+    rmSync(directory, {
+      force: true,
+      recursive: true,
+    });
+  }
 });
 
 describe('api server', () => {
-  it('tests profile connections through the phase-a endpoint', async () => {
-    const response = await server.inject({
-      method: 'POST',
-      payload: {
-        baseUrl: 'https://ha.local:8123',
-        token: 'abc123',
-      },
-      url: '/api/profiles/test',
+  it('tests inline profile connections', async () => {
+    const server = await createServer({
+      dbPath: createTempDatabasePath(),
     });
 
-    expect(response.statusCode).toBe(200);
+    try {
+      const response = await server.inject({
+        method: 'POST',
+        payload: {
+          baseUrl: 'https://ha.local:8123',
+          token: 'abc123',
+        },
+        url: '/api/profiles/test',
+      });
 
-    const body = parseJson<ConnectionTestResponse>(response.body);
-    expect(body.result.ok).toBe(true);
-    expect(body.result.capabilities.labels).toBe('supported');
+      expect(response.statusCode).toBe(200);
+
+      const body = parseJson<ConnectionTestResponse>(response.body);
+      expect(body.result.ok).toBe(true);
+      expect(body.result.capabilities.labels).toBe('supported');
+    } finally {
+      await server.close();
+    }
   });
 
-  it('supports scan lifecycle endpoints and history', async () => {
-    const createResponse = await server.inject({
-      method: 'POST',
-      url: '/api/scans',
+  it('supports persisted profile CRUD with redacted responses', async () => {
+    const server = await createServer({
+      dbPath: createTempDatabasePath(),
     });
 
-    expect(createResponse.statusCode).toBe(200);
-    const created = parseJson<ScanCreateResponse>(createResponse.body);
-    expect(created.scan.id).toEqual(expect.any(String));
-    expect(created.scan.findings.length).toBeGreaterThan(0);
+    try {
+      const createResponse = await server.inject({
+        method: 'POST',
+        payload: {
+          baseUrl: 'https://ha.local:8123',
+          name: 'primary',
+          token: 'abc123',
+        },
+        url: '/api/profiles',
+      });
 
-    const scanResponse = await server.inject({
-      method: 'GET',
-      url: `/api/scans/${created.scan.id}`,
-    });
+      expect(createResponse.statusCode).toBe(200);
+      const created = parseJson<ProfileReadResponse>(createResponse.body);
+      expect(created.profile).toMatchObject({
+        hasToken: true,
+        isDefault: false,
+        name: 'primary',
+      });
+      expect('token' in created.profile).toBe(false);
 
-    expect(scanResponse.statusCode).toBe(200);
-    const scanBody = parseJson<ScanReadResponse>(scanResponse.body);
-    expect(scanBody.scan.id).toBe(created.scan.id);
+      const defaultResponse = await server.inject({
+        method: 'POST',
+        url: '/api/profiles/primary/default',
+      });
 
-    const findingsResponse = await server.inject({
-      method: 'GET',
-      url: `/api/scans/${created.scan.id}/findings`,
-    });
+      expect(defaultResponse.statusCode).toBe(200);
 
-    expect(findingsResponse.statusCode).toBe(200);
-    const findingsBody = parseJson<ScanFindingsResponse>(findingsResponse.body);
-    expect(findingsBody.scanId).toBe(created.scan.id);
+      const listResponse = await server.inject({
+        method: 'GET',
+        url: '/api/profiles',
+      });
 
-    const historyResponse = await server.inject({
-      method: 'GET',
-      url: '/api/history',
-    });
-
-    expect(historyResponse.statusCode).toBe(200);
-    const historyBody = parseJson<ScanHistoryResponse>(historyResponse.body);
-    expect(historyBody.scans).toEqual(
-      expect.arrayContaining([
+      expect(listResponse.statusCode).toBe(200);
+      const listed = parseJson<ProfileListResponse>(listResponse.body);
+      expect(listed.profiles).toEqual([
         expect.objectContaining({
-          findingsCount: created.scan.findings.length,
-          id: created.scan.id,
+          hasToken: true,
+          isDefault: true,
+          name: 'primary',
         }),
-      ]),
-    );
+      ]);
+
+      const readResponse = await server.inject({
+        method: 'GET',
+        url: '/api/profiles/primary',
+      });
+
+      expect(readResponse.statusCode).toBe(200);
+
+      const storedTestResponse = await server.inject({
+        method: 'POST',
+        url: '/api/profiles/primary/test',
+      });
+
+      expect(storedTestResponse.statusCode).toBe(200);
+
+      const deleteResponse = await server.inject({
+        method: 'DELETE',
+        url: '/api/profiles/primary',
+      });
+
+      expect(deleteResponse.statusCode).toBe(200);
+    } finally {
+      await server.close();
+    }
+  });
+
+  it('persists scans across restarts and serves diffs, previews, and dry-run apply', async () => {
+    const dbPath = createTempDatabasePath();
+    const firstServer = await createServer({
+      dbPath,
+      inventoryProvider: () => baselineInventory,
+    });
+
+    let firstScanId = '';
+
+    try {
+      await firstServer.inject({
+        method: 'POST',
+        payload: {
+          baseUrl: 'https://ha.local:8123',
+          name: 'primary',
+          token: 'abc123',
+        },
+        url: '/api/profiles',
+      });
+
+      await firstServer.inject({
+        method: 'POST',
+        url: '/api/profiles/primary/default',
+      });
+
+      const firstScanResponse = await firstServer.inject({
+        method: 'POST',
+        url: '/api/scans',
+      });
+
+      expect(firstScanResponse.statusCode).toBe(200);
+      const firstScan = parseJson<ScanCreateResponse>(firstScanResponse.body);
+      firstScanId = firstScan.scan.id;
+      expect(firstScan.scan.profileName).toBe('primary');
+      expect(firstScan.scan.diffSummary.regressedCount).toBe(
+        firstScan.scan.findings.length,
+      );
+    } finally {
+      await firstServer.close();
+    }
+
+    const secondServer = await createServer({
+      dbPath,
+      inventoryProvider: () => changedInventory,
+    });
+
+    try {
+      const secondScanResponse = await secondServer.inject({
+        method: 'POST',
+        url: '/api/scans',
+      });
+
+      expect(secondScanResponse.statusCode).toBe(200);
+      const secondScan = parseJson<ScanCreateResponse>(secondScanResponse.body);
+
+      const readResponse = await secondServer.inject({
+        method: 'GET',
+        url: `/api/scans/${secondScan.scan.id}`,
+      });
+
+      expect(readResponse.statusCode).toBe(200);
+      const scanBody = parseJson<ScanReadResponse>(readResponse.body);
+      expect(scanBody.scan.diffSummary).toMatchObject({
+        previousScanId: firstScanId,
+        regressedCount: 1,
+        resolvedCount: 2,
+        unchangedCount: 1,
+      });
+
+      const findingsResponse = await secondServer.inject({
+        method: 'GET',
+        url: `/api/scans/${secondScan.scan.id}/findings`,
+      });
+
+      expect(findingsResponse.statusCode).toBe(200);
+      const findingsBody = parseJson<ScanFindingsResponse>(
+        findingsResponse.body,
+      );
+      expect(findingsBody.findings).toHaveLength(2);
+
+      const historyResponse = await secondServer.inject({
+        method: 'GET',
+        url: '/api/history',
+      });
+
+      expect(historyResponse.statusCode).toBe(200);
+      const historyBody = parseJson<ScanHistoryResponse>(historyResponse.body);
+      expect(historyBody.scans).toHaveLength(2);
+      expect(historyBody.scans[0]?.id).toBe(secondScan.scan.id);
+
+      const previewResponse = await secondServer.inject({
+        method: 'POST',
+        payload: {
+          scanId: secondScan.scan.id,
+        },
+        url: '/api/fixes/preview',
+      });
+
+      expect(previewResponse.statusCode).toBe(200);
+      const previewBody = parseJson<FixPreviewResponse>(previewResponse.body);
+      expect(previewBody.actions).toHaveLength(2);
+
+      const applyResponse = await secondServer.inject({
+        method: 'POST',
+        payload: {
+          dryRun: true,
+          scanId: secondScan.scan.id,
+        },
+        url: '/api/fixes/apply',
+      });
+
+      expect(applyResponse.statusCode).toBe(200);
+      const applyBody = parseJson<FixApplyResponse>(applyResponse.body);
+      expect(applyBody).toMatchObject({
+        appliedCount: 0,
+        mode: 'dry_run',
+        scanId: secondScan.scan.id,
+      });
+
+      const rejectedApply = await secondServer.inject({
+        method: 'POST',
+        payload: {
+          scanId: secondScan.scan.id,
+        },
+        url: '/api/fixes/apply',
+      });
+
+      expect(rejectedApply.statusCode).toBe(400);
+    } finally {
+      await secondServer.close();
+    }
   });
 });

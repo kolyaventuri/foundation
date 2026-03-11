@@ -1,16 +1,15 @@
 {
-  "name": "@ha-repair/cli",
+  "name": "@ha-repair/storage",
   "private": true,
   "dependencies": {
     "@ha-repair/contracts": "workspace:*",
     "@ha-repair/ha-client": "workspace:*",
-    "@ha-repair/llm": "workspace:*",
     "@ha-repair/scan-engine": "workspace:*",
-    "@ha-repair/storage": "workspace:*",
-    "commander": "^14.0.0"
+    "drizzle-orm": "^0.44.2"
   },
+  "exports": "./src/index.ts",
+  "types": "./src/index.ts",
   "scripts": {
-    "dev": "tsx src/index.ts",
     "typecheck": "tsc --project tsconfig.json --noEmit"
   }
 }

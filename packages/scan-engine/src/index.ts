@@ -1,5 +1,7 @@
+import {randomUUID} from 'node:crypto';
 import type {
   Finding,
+  FixAction,
   FrameworkSummary,
   InventoryGraph,
   ScanRun,
@@ -9,8 +11,8 @@ export function createFrameworkSummary(): FrameworkSummary {
   return {
     priorities: [
       'Replace the mock Home Assistant client with a real authenticated websocket + REST adapter.',
-      'Persist connection profiles, scan runs, and findings in SQLite.',
-      'Ship the first deterministic rule packs for naming, area coverage, and assistant exposure.',
+      'Expand deterministic rule packs for naming, area coverage, and assistant exposure.',
+      'Move from dry-run previews into guarded live apply flows and richer exports.',
     ],
     surfaces: [
       {
@@ -18,7 +20,7 @@ export function createFrameworkSummary(): FrameworkSummary {
         name: 'API shell',
         state: 'ready',
         summary:
-          'Fastify now exposes health, framework summary, and a stubbed connection-test endpoint.',
+          'Fastify now exposes persisted profile, scan, history, preview, and dry-run apply endpoints.',
       },
       {
         id: 'web',
@@ -32,14 +34,14 @@ export function createFrameworkSummary(): FrameworkSummary {
         name: 'CLI path',
         state: 'ready',
         summary:
-          'The CLI can already report framework status and exercise the shared Home Assistant client.',
+          'The CLI now manages saved profiles and local scan, findings, dry-run apply, and export flows.',
       },
       {
         id: 'rules',
         name: 'Repair engine',
-        state: 'planned',
+        state: 'ready',
         summary:
-          'Rule packs, prioritization, and fix previews are the next vertical slice on top of this scaffold.',
+          'Deterministic findings now persist with diff summaries and stable dry-run preview actions.',
       },
     ],
     tagline:
@@ -97,7 +99,69 @@ function findStaleEntities(inventory: InventoryGraph): Finding[] {
     }));
 }
 
-export function runScan(inventory: InventoryGraph): ScanRun {
+export function createFixActions(findings: Finding[]): FixAction[] {
+  return findings.map((finding) => {
+    switch (finding.kind) {
+      case 'duplicate_name': {
+        return {
+          findingId: finding.id,
+          id: `fix:${finding.id}:rename`,
+          kind: 'rename_duplicate_name',
+          rationale:
+            'Duplicate friendly names create ambiguous cleanup and assistant experiences.',
+          risk: 'medium',
+          steps: [
+            'Review each entity sharing the duplicate name.',
+            'Choose a disambiguated friendly name for each duplicate entity.',
+            'Apply the naming change after confirming the new labels in Home Assistant.',
+          ],
+          title: `Rename duplicate entities for ${finding.title.replace('Duplicate name: ', '')}`,
+        };
+      }
+
+      case 'orphaned_entity_device': {
+        return {
+          findingId: finding.id,
+          id: `fix:${finding.id}:repair-link`,
+          kind: 'repair_orphaned_entity_device',
+          rationale:
+            'Missing device links usually indicate stale registry state or a partially removed integration.',
+          risk: 'high',
+          steps: [
+            'Confirm whether the referenced device still exists in Home Assistant.',
+            'Relink the entity to the correct device or remove the broken registry entry.',
+            'Rescan after the registry cleanup to confirm the orphan is gone.',
+          ],
+          title: `Repair missing device link for ${finding.objectIds[0]}`,
+        };
+      }
+
+      case 'stale_entity': {
+        return {
+          findingId: finding.id,
+          id: `fix:${finding.id}:review-stale`,
+          kind: 'review_stale_entity',
+          rationale:
+            'Stale entities often represent integrations or helpers that can be disabled or removed safely.',
+          risk: 'low',
+          steps: [
+            'Verify the entity is no longer needed.',
+            'Disable or remove the stale entity from the registry or source integration.',
+            'Run another scan to confirm the stale entity finding resolves.',
+          ],
+          title: `Review stale entity ${finding.objectIds[0]}`,
+        };
+      }
+    }
+
+    throw new Error('Unhandled finding kind');
+  });
+}
+
+export function runScan(
+  inventory: InventoryGraph,
+  profileName: string | null = null,
+): ScanRun {
   const findings = [
     ...findDuplicateNameFindings(inventory),
     ...findOrphanedDeviceLinks(inventory),
@@ -107,7 +171,8 @@ export function runScan(inventory: InventoryGraph): ScanRun {
   return {
     createdAt: new Date().toISOString(),
     findings,
-    id: `scan-${Date.now().toString(36)}`,
+    id: `scan-${randomUUID()}`,
     inventory,
+    profileName,
   };
 }

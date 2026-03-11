@@ -6,6 +6,7 @@ Initial workspace scaffold for the Home Assistant repair console described in [P
 
 - `apps/api`: Fastify API for orchestration, scan execution, and history services
 - `apps/web`: React + Vite UI for the guided cleanup workflow
+- `packages/storage`: Shared SQLite persistence and repair service layer
 - `packages/contracts`: Shared domain and API contracts
 - `packages/ha-client`: Home Assistant connection and API abstraction
 - `packages/scan-engine`: Deterministic scan execution and rule findings
@@ -25,12 +26,13 @@ Initial workspace scaffold for the Home Assistant repair console described in [P
 
 ## Current state
 
-Phase A is now started with a minimal deterministic vertical slice:
+Phase B is now in place with persisted local workflows:
 
-- shared contracts now include capability, inventory, finding, and scan-run models
+- shared contracts now include persisted profiles, scan diffs, dry-run previews, and export bundle models
 - the Home Assistant client returns a mocked capability probe and a mock inventory fixture
 - the scan engine emits deterministic findings for duplicate names, stale entities, and orphaned entity-device links
-- the API now supports profile testing, creating scans, reading scans, reading findings, and listing local scan history
-- the CLI now supports API-backed `ha-repair scan` and `ha-repair findings [scanId]` for the Phase A scan loop
+- the API now persists named profiles, scan runs, findings, history, diff summaries, and dry-run preview/apply responses in SQLite
+- the CLI now manages saved profiles and local `scan`, `findings`, `apply --dry-run`, and `export --format json` flows against the same SQLite database
+- migrations run automatically on startup and default to `./data/ha-repair.sqlite`, overridable with `HA_REPAIR_DB_PATH` or `--db-path`
 
-The next implementation pass should add SQLite persistence, dry-run fix previews, and richer deterministic rule packs.
+The next implementation pass should add real Home Assistant adapters, richer deterministic rule packs, and guarded live apply behavior.

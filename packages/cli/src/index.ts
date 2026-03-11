@@ -1,231 +1,429 @@
 import process from 'node:process';
-import {Command} from 'commander';
-import {testConnection} from '@ha-repair/ha-client';
+import {Command, Option} from 'commander';
+import type {ConnectionProfile, FixAction} from '@ha-repair/contracts';
 import {listProviderDescriptors} from '@ha-repair/llm';
 import {createFrameworkSummary} from '@ha-repair/scan-engine';
+import {
+  createRepairService,
+  RepairServiceError,
+  type RepairService,
+} from '@ha-repair/storage';
 
-const defaultApiUrl = process.env.HA_REPAIR_API_URL ?? 'http://127.0.0.1:4010';
-
-type ScanHistoryEntry = {
-  createdAt: string;
-  id: string;
+type GlobalOptions = {
+  dbPath?: string;
 };
 
-const program = new Command();
-const frameworkCommand = program
-  .command('framework')
-  .description('Inspect the current scaffold status');
-const connectCommand = program
-  .command('connect')
-  .description('Run Home Assistant connection checks');
-
-function asObject(value: unknown): Record<string, unknown> {
-  if (!value || typeof value !== 'object') {
-    throw new Error('Expected object response payload');
-  }
-
-  return value as Record<string, unknown>;
+function printJson(value: unknown) {
+  console.log(JSON.stringify(value, null, 2));
 }
 
-function readString(
-  payload: Record<string, unknown>,
-  key: string,
-  context: string,
-): string {
-  const value = payload[key];
-
-  if (typeof value !== 'string') {
-    throw new TypeError(`Expected string ${context}.${key}`);
+function reportError(error: unknown) {
+  if (error instanceof RepairServiceError) {
+    console.error(error.message);
+    process.exitCode = 1;
+    return;
   }
 
-  return value;
-}
-
-function readObject(
-  payload: Record<string, unknown>,
-  key: string,
-  context: string,
-): Record<string, unknown> {
-  const value = payload[key];
-
-  if (!value || typeof value !== 'object') {
-    throw new Error(`Expected object ${context}.${key}`);
+  if (error instanceof Error) {
+    console.error(error.message);
+    process.exitCode = 1;
+    return;
   }
 
-  return value as Record<string, unknown>;
+  console.error('Unknown command error');
+  process.exitCode = 1;
 }
 
-function readArray(
-  payload: Record<string, unknown>,
-  key: string,
-  context: string,
-): unknown[] {
-  const value = payload[key];
-
-  if (!Array.isArray(value)) {
-    throw new TypeError(`Expected array ${context}.${key}`);
-  }
-
-  return value;
+function getGlobalOptions(command: Command): GlobalOptions {
+  return command.optsWithGlobals<GlobalOptions>();
 }
 
-async function requestJson(
-  baseUrl: string,
-  path: string,
-  init?: RequestInit,
-): Promise<unknown> {
-  const response = await fetch(`${baseUrl.replace(/\/+$/u, '')}${path}`, init);
-  const bodyText = await response.text();
-  const body: unknown =
-    bodyText.length > 0 ? (JSON.parse(bodyText) as unknown) : undefined;
-
-  if (!response.ok) {
-    const fallback = `${response.status} ${response.statusText}`;
-
-    if (
-      !body ||
-      typeof body !== 'object' ||
-      !('error' in body && typeof body.error === 'string')
-    ) {
-      throw new Error(`Request failed: ${fallback}`);
-    }
-
-    throw new Error(`Request failed: ${body.error}`);
-  }
-
-  return body;
-}
-
-function getLatestScanId(history: ScanHistoryEntry[]): string | undefined {
-  let latest: ScanHistoryEntry | undefined;
-
-  for (const entry of history) {
-    if (!latest || entry.createdAt > latest.createdAt) {
-      latest = entry;
-    }
-  }
-
-  return latest?.id;
-}
-
-function getApiUrlFlag(): string {
-  const index = process.argv.indexOf('--api-url');
-
-  if (index !== -1) {
-    const value = process.argv[index + 1];
-
-    if (typeof value === 'string' && value.length > 0) {
-      return value;
-    }
-  }
-
-  return defaultApiUrl;
-}
-
-program
-  .name('ha-repair')
-  .description('Framework CLI for the Home Assistant repair console')
-  .version('0.0.0');
-
-frameworkCommand
-  .command('status')
-  .description('Print the current framework summary')
-  .action(() => {
-    const framework = createFrameworkSummary();
-    const providers = listProviderDescriptors();
-
-    console.log(`\n${framework.title}`);
-    console.log(`${framework.tagline}\n`);
-
-    console.log('Runtime surfaces:');
-    for (const surface of framework.surfaces) {
-      console.log(`- [${surface.state}] ${surface.name}: ${surface.summary}`);
-    }
-
-    console.log('\nProviders:');
-    for (const provider of providers) {
-      console.log(`- ${provider.label}: ${provider.description}`);
-    }
-
-    console.log('\nNext steps:');
-    for (const priority of framework.priorities) {
-      console.log(`- ${priority}`);
-    }
+async function withService<T>(
+  command: Command,
+  callback: (service: RepairService) => Promise<T>,
+): Promise<T> {
+  const globalOptions = getGlobalOptions(command);
+  const service = await createRepairService({
+    ...(globalOptions.dbPath ? {dbPath: globalOptions.dbPath} : {}),
   });
 
-connectCommand
-  .command('test')
-  .description('Run the current stubbed Home Assistant connection check')
-  .requiredOption('--url <url>', 'Base Home Assistant URL')
-  .requiredOption('--token <token>', 'Long-lived access token')
-  .action(async (options: {token: string; url: string}) => {
-    const result = await testConnection({
-      baseUrl: options.url,
-      name: 'cli',
-      token: options.token,
+  try {
+    return await callback(service);
+  } finally {
+    await service.close();
+  }
+}
+
+function buildInlineProfile(options: {
+  configPath?: string;
+  token: string;
+  url: string;
+}): ConnectionProfile {
+  return {
+    baseUrl: options.url,
+    name: 'cli',
+    token: options.token,
+    ...(options.configPath ? {configPath: options.configPath} : {}),
+  };
+}
+
+function resolveSelectedFindingIds(
+  actions: FixAction[],
+  fixIds: string[],
+): string[] {
+  const requestedIds = new Set(fixIds);
+  const selected = actions.filter((action) => requestedIds.has(action.id));
+
+  if (selected.length !== requestedIds.size) {
+    const foundIds = new Set(selected.map((action) => action.id));
+    const missing = [...requestedIds].filter((fixId) => !foundIds.has(fixId));
+    throw new RepairServiceError(
+      'finding_not_found',
+      400,
+      `Unknown fix ids: ${missing.join(', ')}`,
+    );
+  }
+
+  return selected.map((action) => action.findingId);
+}
+
+export function buildProgram() {
+  const program = new Command();
+  const frameworkCommand = program
+    .command('framework')
+    .description('Inspect the current scaffold status');
+  const connectCommand = program
+    .command('connect')
+    .description('Run Home Assistant connection checks and manage profiles');
+
+  program
+    .name('ha-repair')
+    .description('Framework CLI for the Home Assistant repair console')
+    .version('0.0.0')
+    .option('--db-path <path>', 'SQLite database path');
+
+  frameworkCommand
+    .command('status')
+    .description('Print the current framework summary')
+    .action(() => {
+      const framework = createFrameworkSummary();
+      const providers = listProviderDescriptors();
+
+      console.log(`\n${framework.title}`);
+      console.log(`${framework.tagline}\n`);
+
+      console.log('Runtime surfaces:');
+      for (const surface of framework.surfaces) {
+        console.log(`- [${surface.state}] ${surface.name}: ${surface.summary}`);
+      }
+
+      console.log('\nProviders:');
+      for (const provider of providers) {
+        console.log(`- ${provider.label}: ${provider.description}`);
+      }
+
+      console.log('\nNext steps:');
+      for (const priority of framework.priorities) {
+        console.log(`- ${priority}`);
+      }
     });
 
-    console.log(JSON.stringify(result, null, 2));
-  });
-
-program
-  .command('scan')
-  .description('Run a deterministic scan through the local API')
-  .option('--api-url <url>', 'Repair API base URL', defaultApiUrl)
-  .action(async () => {
-    const payload = asObject(
-      await requestJson(getApiUrlFlag(), '/api/scans', {method: 'POST'}),
-    );
-    const scan = readObject(payload, 'scan', 'scanResponse');
-    const findings = readArray(scan, 'findings', 'scan');
-    const scanId = readString(scan, 'id', 'scan');
-    const scannedAt = readString(scan, 'createdAt', 'scan');
-
-    console.log(
-      JSON.stringify(
-        {
-          findings: findings.length,
-          scanId,
-          scannedAt,
+  connectCommand
+    .command('test')
+    .description('Run the current mocked Home Assistant connection check')
+    .option('--config-path <path>', 'Optional Home Assistant config path')
+    .option('--profile <name>', 'Saved connection profile name')
+    .option('--token <token>', 'Long-lived access token')
+    .option('--url <url>', 'Base Home Assistant URL')
+    .action(
+      async (
+        options: {
+          configPath?: string;
+          profile?: string;
+          token?: string;
+          url?: string;
         },
-        null,
-        2,
-      ),
-    );
-  });
+        command: Command,
+      ) => {
+        try {
+          if (options.profile) {
+            const result = await withService(command, async (service) =>
+              service.testSavedProfile(options.profile!),
+            );
+            printJson(result);
+            return;
+          }
 
-program
-  .command('findings [scanId]')
-  .description('Print findings from a scan via the local API')
-  .option('--api-url <url>', 'Repair API base URL', defaultApiUrl)
-  .action(async (scanId?: string) => {
-    const apiUrl = getApiUrlFlag();
-    const historyPayload = asObject(await requestJson(apiUrl, '/api/history'));
-    const scans = readArray(historyPayload, 'scans', 'historyResponse').map(
-      (entry) => {
-        const scanEntry = asObject(entry);
+          if (!options.url || !options.token) {
+            throw new RepairServiceError(
+              'invalid_profile',
+              400,
+              'Provide either --profile or both --url and --token.',
+            );
+          }
 
-        return {
-          createdAt: readString(scanEntry, 'createdAt', 'historyEntry'),
-          id: readString(scanEntry, 'id', 'historyEntry'),
-        };
+          const result = await withService(command, async (service) =>
+            service.testInlineProfile(
+              buildInlineProfile({
+                token: options.token!,
+                url: options.url!,
+                ...(options.configPath ? {configPath: options.configPath} : {}),
+              }),
+            ),
+          );
+          printJson(result);
+        } catch (error) {
+          reportError(error);
+        }
       },
     );
 
-    const resolvedScanId = scanId ?? getLatestScanId(scans);
+  connectCommand
+    .command('save')
+    .description('Persist a named Home Assistant connection profile')
+    .requiredOption('--name <name>', 'Profile name')
+    .requiredOption('--token <token>', 'Long-lived access token')
+    .requiredOption('--url <url>', 'Base Home Assistant URL')
+    .option('--config-path <path>', 'Optional Home Assistant config path')
+    .option('--default', 'Set the saved profile as default')
+    .action(
+      async (
+        options: {
+          configPath?: string;
+          default?: boolean;
+          name: string;
+          token: string;
+          url: string;
+        },
+        command: Command,
+      ) => {
+        try {
+          const profile = await withService(command, async (service) => {
+            await service.saveProfile({
+              baseUrl: options.url,
+              name: options.name,
+              token: options.token,
+              ...(options.configPath ? {configPath: options.configPath} : {}),
+            });
 
-    if (!resolvedScanId) {
-      console.error('No scans found. Execute `ha-repair scan` first.');
-      process.exitCode = 1;
-      return;
-    }
+            if (options.default) {
+              return service.setDefaultProfile(options.name);
+            }
 
-    const findingsPayload = asObject(
-      await requestJson(apiUrl, `/api/scans/${resolvedScanId}/findings`),
+            return service.getProfile(options.name);
+          });
+
+          printJson(profile);
+        } catch (error) {
+          reportError(error);
+        }
+      },
     );
-    const findings = readArray(findingsPayload, 'findings', 'findingsResponse');
 
-    console.log(JSON.stringify(findings, null, 2));
-  });
+  connectCommand
+    .command('list')
+    .description('List saved connection profiles')
+    .action(async (_options: Record<string, never>, command: Command) => {
+      try {
+        const profiles = await withService(command, async (service) =>
+          service.listProfiles(),
+        );
+        printJson(profiles);
+      } catch (error) {
+        reportError(error);
+      }
+    });
 
-void program.parseAsync(process.argv);
+  connectCommand
+    .command('delete <name>')
+    .description('Delete a saved connection profile')
+    .action(
+      async (
+        name: string,
+        _options: Record<string, never>,
+        command: Command,
+      ) => {
+        try {
+          const response = await withService(command, async (service) =>
+            service.deleteProfile(name),
+          );
+          printJson(response);
+        } catch (error) {
+          reportError(error);
+        }
+      },
+    );
+
+  connectCommand
+    .command('use <name>')
+    .description('Set the default connection profile')
+    .action(
+      async (
+        name: string,
+        _options: Record<string, never>,
+        command: Command,
+      ) => {
+        try {
+          const profile = await withService(command, async (service) =>
+            service.setDefaultProfile(name),
+          );
+          printJson(profile);
+        } catch (error) {
+          reportError(error);
+        }
+      },
+    );
+
+  program
+    .command('scan')
+    .description('Run a deterministic scan through the local SQLite service')
+    .option('--profile <name>', 'Saved connection profile name')
+    .action(
+      async (
+        options: {
+          profile?: string;
+        },
+        command: Command,
+      ) => {
+        try {
+          const scan = await withService(command, async (service) =>
+            service.createScan(
+              options.profile ? {profileName: options.profile} : {},
+            ),
+          );
+
+          printJson({
+            findings: scan.findings.length,
+            profileName: scan.profileName,
+            scanId: scan.id,
+            scannedAt: scan.createdAt,
+          });
+        } catch (error) {
+          reportError(error);
+        }
+      },
+    );
+
+  program
+    .command('findings [scanId]')
+    .description('Print findings from a scan in the local SQLite service')
+    .action(
+      async (
+        scanId: string | undefined,
+        _options: Record<string, never>,
+        command: Command,
+      ) => {
+        try {
+          const findings = await withService(command, async (service) => {
+            const resolvedScanId = scanId ?? (await service.getLatestScanId());
+
+            if (!resolvedScanId) {
+              throw new RepairServiceError(
+                'scan_not_found',
+                404,
+                'No scans found. Execute `ha-repair scan` first.',
+              );
+            }
+
+            return service.getScanFindings(resolvedScanId);
+          });
+
+          printJson(findings);
+        } catch (error) {
+          reportError(error);
+        }
+      },
+    );
+
+  program
+    .command('apply [fixIds...]')
+    .description('Return a deterministic dry-run fix plan for a scan')
+    .requiredOption('--scan <scanId>', 'Scan id to preview/apply')
+    .option('--dry-run', 'Required for Phase B')
+    .action(
+      async (
+        fixIds: string[],
+        options: {
+          dryRun?: boolean;
+          scan: string;
+        },
+        command: Command,
+      ) => {
+        try {
+          if (!options.dryRun) {
+            throw new RepairServiceError(
+              'dry_run_required',
+              400,
+              'Pass --dry-run. Live apply is not available in Phase B.',
+            );
+          }
+
+          const response = await withService(command, async (service) => {
+            const preview = await service.previewFixes({
+              scanId: options.scan,
+            });
+            const findingIds =
+              fixIds.length > 0
+                ? resolveSelectedFindingIds(preview.actions, fixIds)
+                : undefined;
+
+            return service.applyFixes(
+              findingIds
+                ? {
+                    dryRun: true,
+                    findingIds,
+                    scanId: options.scan,
+                  }
+                : {
+                    dryRun: true,
+                    scanId: options.scan,
+                  },
+            );
+          });
+
+          printJson(response);
+        } catch (error) {
+          reportError(error);
+        }
+      },
+    );
+
+  program
+    .command('export [scanId]')
+    .description('Export a scan bundle as JSON')
+    .addOption(
+      new Option('--format <format>', 'Export format')
+        .choices(['json'])
+        .default('json'),
+    )
+    .action(
+      async (
+        scanId: string | undefined,
+        _options: {
+          format: 'json';
+        },
+        command: Command,
+      ) => {
+        try {
+          const exportBundle = await withService(command, async (service) =>
+            service.exportScan(scanId),
+          );
+
+          printJson(exportBundle);
+        } catch (error) {
+          reportError(error);
+        }
+      },
+    );
+
+  return program;
+}
+
+export async function runCli(argv = process.argv) {
+  const program = buildProgram();
+  await program.parseAsync(argv);
+}
+
+if (require.main === module) {
+  void runCli();
+}
