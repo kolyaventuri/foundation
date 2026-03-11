@@ -3,7 +3,7 @@
 This repo can already talk to a real Home Assistant instance for live, read-only discovery. The safest current workflow is:
 
 1. save a Home Assistant connection profile
-2. run a live scan from the CLI or API
+2. run a live scan from the web UI, CLI, or API
 3. open that saved scan in the web UI for review
 
 ## What works today
@@ -12,7 +12,7 @@ This repo can already talk to a real Home Assistant instance for live, read-only
 - live scans are read-only
 - deep scans can analyze Home Assistant config files if you give the tool a local `configPath`
 - preview/apply is still dry-run only; no live mutation path is wired up yet
-- the web UI can review persisted live scans, but it does not currently create them
+- the web UI can create live scans from saved profiles and review persisted runs
 
 ## Prerequisites
 
@@ -137,11 +137,13 @@ That starts:
 
 The Vite dev server proxies `/api` and `/health` to the API server automatically.
 
-## 7. Open the saved scan in the web UI
+## 7. Run or open the scan in the web UI
 
 Open `http://127.0.0.1:4173`.
 
-Use the landing page to open the live scan you just created. Once a live scan exists, the web workbench can:
+Use the landing page to choose `Live read-only`, select the saved profile, and optionally enable deep config analysis when that profile has a local `configPath`. You can also open any previously saved scan from the history list.
+
+Once a live scan exists, the web workbench can:
 
 - browse findings
 - stage recommended changes
@@ -149,7 +151,7 @@ Use the landing page to open the live scan you just created. Once a live scan ex
 - run dry-run apply
 - capture a backup checkpoint for live scans
 
-Important: the current `Run scan` button in the browser creates a mock scan because the UI does not yet send scan mode or profile data. For a real Home Assistant scan, create the scan through the CLI or API first, then open it in the browser.
+Important: the web UI reads saved profiles from the API database. If no live profiles appear in the browser, save one first through the CLI or API and make sure the web/API process is pointed at the same `HA_REPAIR_DB_PATH`.
 
 ## API-only flow
 

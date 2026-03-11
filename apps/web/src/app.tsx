@@ -1,16 +1,21 @@
 import {
+  type ApiErrorResponse,
   createFrameworkSummary,
   type BackupCheckpointResponse,
   type Finding,
   type FindingKind,
   type FindingSeverity,
+  type ProfileListResponse,
   type FixApplyResponse,
   type FixPreviewInput,
   type FixPreviewResponse,
+  type SavedConnectionProfile,
+  type ScanCreateRequest,
   type ScanCreateResponse,
   type ScanDetail,
   type ScanHistoryEntry,
   type ScanHistoryResponse,
+  type ScanMode,
   type ScanWorkbench,
   type ScanWorkbenchResponse,
   type WorkbenchApplyResponse,
@@ -40,6 +45,14 @@ import {
   type VisibleVirtualRailRow,
   type WorkbenchFindingRecord,
 } from './workbench';
+import {
+  buildScanCreateRequest,
+  createDefaultScanLaunchDraft,
+  getScanLaunchConstraint,
+  getSelectedProfile,
+  normalizeScanLaunchDraft,
+  type ScanLaunchDraft,
+} from './scan-launch';
 
 type LoadStatus = 'idle' | 'loading' | 'ready' | 'error';
 type MutationStatus = 'idle' | 'running' | 'ready' | 'error';
@@ -99,7 +112,17 @@ async function fetchJson<T>(
   });
 
   if (!response.ok) {
-    throw new Error(`Request failed with ${response.status}`);
+    let message = `Request failed with ${response.status}`;
+
+    try {
+      const payload = (await response.json()) as Partial<ApiErrorResponse>;
+
+      if (typeof payload.error === 'string' && payload.error.length > 0) {
+        message = `${message}: ${payload.error}`;
+      }
+    } catch {}
+
+    throw new Error(message);
   }
 
   return response.json() as Promise<T>;
@@ -139,6 +162,10 @@ function formatEntryStatus(status: WorkbenchEntry['status']): string {
 
 function formatScanMode(value: ScanDetail['mode']): string {
   return value === 'live' ? 'Live read-only' : 'Mock';
+}
+
+function formatScanAction(mode: ScanMode): string {
+  return mode === 'live' ? 'Run live scan' : 'Run mock scan';
 }
 
 function readRoute(): WorkspaceRoute {
@@ -301,15 +328,21 @@ function createDefaultFilters(): RailFilters {
 export function App() {
   const [route, setRoute] = useState<WorkspaceRoute>(() => readRoute());
   const [historyStatus, setHistoryStatus] = useState<LoadStatus>('idle');
+  const [profilesStatus, setProfilesStatus] = useState<LoadStatus>('idle');
   const [workspaceStatus, setWorkspaceStatus] = useState<LoadStatus>('idle');
   const [mutationStatus, setMutationStatus] = useState<MutationStatus>('idle');
   const [errorMessage, setErrorMessage] = useState('');
   const [history, setHistory] = useState<ScanHistoryEntry[]>([]);
+  const [profiles, setProfiles] = useState<SavedConnectionProfile[]>([]);
   const [selectedScan, setSelectedScan] = useState<ScanDetail | undefined>();
   const [workbench, setWorkbench] = useState<ScanWorkbench | undefined>();
   const [latestApply, setLatestApply] = useState<
     FixApplyResponse | undefined
   >();
+  const [scanLaunchDraft, setScanLaunchDraft] = useState<ScanLaunchDraft>(() =>
+    createDefaultScanLaunchDraft(),
+  );
+  const [scanLauncherOpen, setScanLauncherOpen] = useState(false);
   const [railCollapsed, setRailCollapsed] = useState<boolean>(() =>
     readRailCollapsed(),
   );
@@ -328,6 +361,21 @@ export function App() {
     ...filters,
     query: deferredQuery,
   };
+  const normalizedScanLaunchDraft = normalizeScanLaunchDraft(
+    scanLaunchDraft,
+    profiles,
+  );
+  const selectedLaunchProfile = getSelectedProfile(
+    normalizedScanLaunchDraft,
+    profiles,
+  );
+  const scanLaunchConstraint = getScanLaunchConstraint(
+    normalizedScanLaunchDraft,
+    profiles,
+    profilesStatus,
+  );
+  const canRunScan =
+    mutationStatus !== 'running' && scanLaunchConstraint === undefined;
   const records =
     selectedScan && workbench
       ? buildWorkbenchFindingRecords(selectedScan, workbench)
@@ -372,6 +420,20 @@ export function App() {
   useEffect(() => {
     writeRailCollapsed(railCollapsed);
   }, [railCollapsed]);
+
+  useEffect(() => {
+    const nextDraft = normalizeScanLaunchDraft(scanLaunchDraft, profiles);
+
+    if (
+      nextDraft.mode === scanLaunchDraft.mode &&
+      nextDraft.deep === scanLaunchDraft.deep &&
+      nextDraft.profileName === scanLaunchDraft.profileName
+    ) {
+      return;
+    }
+
+    setScanLaunchDraft(nextDraft);
+  }, [profiles, scanLaunchDraft]);
 
   useEffect(() => {
     const viewportElement = railViewportReference.current;
@@ -443,6 +505,30 @@ export function App() {
     }
   }
 
+  async function loadProfiles() {
+    setProfilesStatus('loading');
+
+    try {
+      const response = await fetchJson<ProfileListResponse>('/api/profiles');
+
+      startTransition(() => {
+        setProfiles(response.profiles);
+        setProfilesStatus('ready');
+        setErrorMessage('');
+      });
+    } catch (error) {
+      const message =
+        error instanceof Error
+          ? error.message
+          : 'Unknown profiles request error';
+
+      startTransition(() => {
+        setProfilesStatus('error');
+        setErrorMessage(message);
+      });
+    }
+  }
+
   async function loadWorkbench(scanId: string, nextRoute: WorkspaceRoute) {
     setWorkspaceStatus('loading');
 
@@ -496,6 +582,7 @@ export function App() {
 
   useEffect(() => {
     void loadHistory();
+    void loadProfiles();
 
     if (route.scanId) {
       void loadWorkbench(route.scanId, route);
@@ -549,6 +636,7 @@ export function App() {
       'push',
     );
     startTransition(() => {
+      setScanLauncherOpen(false);
       setSelectedScan(undefined);
       setWorkbench(undefined);
       setLatestApply(undefined);
@@ -564,20 +652,62 @@ export function App() {
     };
 
     syncRoute(nextRoute, historyMode);
+    startTransition(() => {
+      setScanLauncherOpen(false);
+    });
     void loadWorkbench(scanId, nextRoute);
   }
 
+  function updateScanLaunchMode(mode: ScanMode) {
+    setScanLaunchDraft((current) =>
+      normalizeScanLaunchDraft(
+        {
+          ...current,
+          mode,
+        },
+        profiles,
+      ),
+    );
+  }
+
+  function updateScanLaunchProfile(profileName: string) {
+    setScanLaunchDraft((current) => ({
+      ...current,
+      profileName,
+    }));
+  }
+
+  function updateScanLaunchDeep(deep: boolean) {
+    setScanLaunchDraft((current) => ({
+      ...current,
+      deep,
+    }));
+  }
+
   async function runScan() {
+    if (scanLaunchConstraint) {
+      startTransition(() => {
+        setMutationStatus('error');
+        setErrorMessage(scanLaunchConstraint);
+      });
+      return;
+    }
+
+    const request = buildScanCreateRequest(
+      normalizedScanLaunchDraft,
+    ) satisfies ScanCreateRequest;
     setMutationStatus('running');
 
     try {
       const response = await fetchJson<ScanCreateResponse>('/api/scans', {
+        body: JSON.stringify(request),
         method: 'POST',
       });
 
       startTransition(() => {
         setMutationStatus('ready');
         setErrorMessage('');
+        setScanLauncherOpen(false);
       });
 
       await loadHistory();
@@ -859,11 +989,11 @@ export function App() {
                 <button
                   className={secondaryButtonClass}
                   onClick={() => {
-                    void runScan();
+                    setScanLauncherOpen((current) => !current);
                   }}
                   type="button"
                 >
-                  Run new scan
+                  {scanLauncherOpen ? 'Hide scan settings' : 'New scan'}
                 </button>
                 {selectedScan?.mode === 'live' && (
                   <button
@@ -946,6 +1076,27 @@ export function App() {
             )}
             {errorMessage && (
               <p className="mt-4 text-sm text-ink-soft">{errorMessage}</p>
+            )}
+            {scanLauncherOpen && (
+              <div className="mt-5">
+                <ScanLauncherPanel
+                  canRunScan={canRunScan}
+                  modeLabel={formatScanAction(normalizedScanLaunchDraft.mode)}
+                  mutationStatus={mutationStatus}
+                  onRunScan={() => {
+                    void runScan();
+                  }}
+                  onUpdateDeep={updateScanLaunchDeep}
+                  onUpdateMode={updateScanLaunchMode}
+                  onUpdateProfile={updateScanLaunchProfile}
+                  profiles={profiles}
+                  profilesStatus={profilesStatus}
+                  scanLaunchConstraint={scanLaunchConstraint}
+                  scanLaunchDraft={normalizedScanLaunchDraft}
+                  selectedProfile={selectedLaunchProfile}
+                  title="New scan"
+                />
+              </div>
             )}
           </section>
 
@@ -1200,6 +1351,7 @@ export function App() {
         </>
       ) : (
         <LandingView
+          canRunScan={canRunScan}
           errorMessage={errorMessage}
           history={history}
           historyStatus={historyStatus}
@@ -1210,6 +1362,14 @@ export function App() {
           onRunScan={() => {
             void runScan();
           }}
+          onUpdateDeep={updateScanLaunchDeep}
+          onUpdateMode={updateScanLaunchMode}
+          onUpdateProfile={updateScanLaunchProfile}
+          profiles={profiles}
+          profilesStatus={profilesStatus}
+          scanLaunchConstraint={scanLaunchConstraint}
+          scanLaunchDraft={normalizedScanLaunchDraft}
+          selectedProfile={selectedLaunchProfile}
         />
       )}
     </main>
@@ -1217,19 +1377,37 @@ export function App() {
 }
 
 function LandingView({
+  canRunScan,
   errorMessage,
   history,
   historyStatus,
   mutationStatus,
   onOpenScan,
   onRunScan,
+  onUpdateDeep,
+  onUpdateMode,
+  onUpdateProfile,
+  profiles,
+  profilesStatus,
+  scanLaunchConstraint,
+  scanLaunchDraft,
+  selectedProfile,
 }: {
+  canRunScan: boolean;
   errorMessage: string;
   history: ScanHistoryEntry[];
   historyStatus: LoadStatus;
   mutationStatus: MutationStatus;
   onOpenScan: (scanId: string) => void;
   onRunScan: () => void;
+  onUpdateDeep: (deep: boolean) => void;
+  onUpdateMode: (mode: ScanMode) => void;
+  onUpdateProfile: (profileName: string) => void;
+  profiles: SavedConnectionProfile[];
+  profilesStatus: LoadStatus;
+  scanLaunchConstraint: string | undefined;
+  scanLaunchDraft: ScanLaunchDraft;
+  selectedProfile: SavedConnectionProfile | undefined;
 }) {
   return (
     <>
@@ -1244,22 +1422,21 @@ function LandingView({
           {appSummary.tagline}
         </p>
         <p className="mt-4 max-w-3xl text-sm leading-6 text-ink-soft">
-          Open a persisted scan and work a dense left-rail queue of recommended
-          fixes. Each staged change is stored server-side per scan and reviewed
-          as one batch before dry-run apply.
+          Start a mock or live read-only scan from the browser, then open any
+          persisted run and work a dense left-rail queue of recommended fixes.
+          Each staged change is stored server-side per scan and reviewed as one
+          batch before dry-run apply.
         </p>
         <div className="mt-7 flex flex-wrap items-center gap-3">
-          <button
-            className={primaryButtonClass}
-            onClick={onRunScan}
-            type="button"
-          >
-            Run scan
-          </button>
           <span
             className={`inline-flex rounded-full border px-3 py-2 text-[0.75rem] font-semibold tracking-[0.16em] uppercase ${statusToneClasses[historyStatus]}`}
           >
             history {historyStatus}
+          </span>
+          <span
+            className={`inline-flex rounded-full border px-3 py-2 text-[0.75rem] font-semibold tracking-[0.16em] uppercase ${statusToneClasses[profilesStatus]}`}
+          >
+            profiles {profilesStatus}
           </span>
           <span
             className={`inline-flex rounded-full border px-3 py-2 text-[0.75rem] font-semibold tracking-[0.16em] uppercase ${statusToneClasses[mutationStatus]}`}
@@ -1270,6 +1447,23 @@ function LandingView({
         {errorMessage && (
           <p className="mt-4 text-sm text-ink-soft">{errorMessage}</p>
         )}
+        <div className="mt-7">
+          <ScanLauncherPanel
+            canRunScan={canRunScan}
+            modeLabel={formatScanAction(scanLaunchDraft.mode)}
+            mutationStatus={mutationStatus}
+            onRunScan={onRunScan}
+            onUpdateDeep={onUpdateDeep}
+            onUpdateMode={onUpdateMode}
+            onUpdateProfile={onUpdateProfile}
+            profiles={profiles}
+            profilesStatus={profilesStatus}
+            scanLaunchConstraint={scanLaunchConstraint}
+            scanLaunchDraft={scanLaunchDraft}
+            selectedProfile={selectedProfile}
+            title="Run a scan"
+          />
+        </div>
       </section>
 
       <section className={`${panelClass} px-6 py-6 md:px-8`}>
@@ -1290,7 +1484,8 @@ function LandingView({
         <div className="mt-5 grid gap-3">
           {history.length === 0 ? (
             <p className="rounded-[1rem] border border-dashed border-ink-strong/15 bg-ink-strong/5 px-4 py-5 text-sm text-ink-soft">
-              No scans saved yet. Run a mock scan to create the first workbench.
+              No scans saved yet. Run a mock or live scan to create the first
+              workbench.
             </p>
           ) : (
             history.map((entry) => (
@@ -1326,6 +1521,153 @@ function LandingView({
         </div>
       </section>
     </>
+  );
+}
+
+function ScanLauncherPanel({
+  canRunScan,
+  modeLabel,
+  mutationStatus,
+  onRunScan,
+  onUpdateDeep,
+  onUpdateMode,
+  onUpdateProfile,
+  profiles,
+  profilesStatus,
+  scanLaunchConstraint,
+  scanLaunchDraft,
+  selectedProfile,
+  title,
+}: {
+  canRunScan: boolean;
+  modeLabel: string;
+  mutationStatus: MutationStatus;
+  onRunScan: () => void;
+  onUpdateDeep: (deep: boolean) => void;
+  onUpdateMode: (mode: ScanMode) => void;
+  onUpdateProfile: (profileName: string) => void;
+  profiles: SavedConnectionProfile[];
+  profilesStatus: LoadStatus;
+  scanLaunchConstraint: string | undefined;
+  scanLaunchDraft: ScanLaunchDraft;
+  selectedProfile: SavedConnectionProfile | undefined;
+  title: string;
+}) {
+  const liveMode = scanLaunchDraft.mode === 'live';
+  const canToggleDeep = liveMode && Boolean(selectedProfile?.configPath);
+  let helperMessage =
+    'Mock mode runs against the local fixture inventory and does not require a saved Home Assistant profile.';
+
+  if (liveMode && profilesStatus === 'loading') {
+    helperMessage = 'Loading saved Home Assistant profiles from the API.';
+  } else if (liveMode && profiles.length === 0) {
+    helperMessage =
+      'No saved Home Assistant profiles were found. Save one through the CLI or API first.';
+  } else if (liveMode && selectedProfile) {
+    helperMessage = selectedProfile.configPath
+      ? `Live scan will connect to ${selectedProfile.baseUrl} and can include local config analysis from ${selectedProfile.configPath}.`
+      : `Live scan will connect to ${selectedProfile.baseUrl}. This profile has no config path, so deep config analysis stays off.`;
+  }
+
+  return (
+    <section className="rounded-[1.25rem] border border-black/8 bg-ink-strong/4 px-4 py-4">
+      <div className="flex flex-wrap items-start justify-between gap-4">
+        <div>
+          <h2 className="font-serif text-2xl">{title}</h2>
+          <p className="mt-2 max-w-3xl text-sm leading-6 text-ink-soft">
+            {helperMessage}
+          </p>
+        </div>
+        <button
+          className={primaryButtonClass}
+          disabled={!canRunScan}
+          onClick={onRunScan}
+          type="button"
+        >
+          {modeLabel}
+        </button>
+      </div>
+
+      <div className="mt-4 grid gap-3 lg:grid-cols-[12rem_minmax(0,1fr)]">
+        <label className="grid gap-2 text-sm text-ink-soft">
+          <span className="text-xs font-semibold tracking-[0.16em] uppercase">
+            Scan mode
+          </span>
+          <select
+            className="rounded-full border border-black/10 bg-white px-4 py-2.5 text-sm text-ink-strong outline-none transition focus:border-accent/35"
+            disabled={mutationStatus === 'running'}
+            onChange={(event) => {
+              onUpdateMode(event.target.value as ScanMode);
+            }}
+            value={scanLaunchDraft.mode}
+          >
+            <option value="mock">Mock</option>
+            <option value="live">Live read-only</option>
+          </select>
+        </label>
+
+        {liveMode ? (
+          <label className="grid gap-2 text-sm text-ink-soft">
+            <span className="text-xs font-semibold tracking-[0.16em] uppercase">
+              Saved profile
+            </span>
+            <select
+              className="rounded-full border border-black/10 bg-white px-4 py-2.5 text-sm text-ink-strong outline-none transition focus:border-accent/35 disabled:bg-white/60"
+              disabled={
+                mutationStatus === 'running' ||
+                profilesStatus === 'loading' ||
+                profiles.length === 0
+              }
+              onChange={(event) => {
+                onUpdateProfile(event.target.value);
+              }}
+              value={scanLaunchDraft.profileName}
+            >
+              {profiles.length === 0 ? (
+                <option value="">No saved profiles</option>
+              ) : (
+                profiles.map((profile) => (
+                  <option key={profile.name} value={profile.name}>
+                    {profile.name}
+                    {profile.isDefault ? ' (default)' : ''}
+                  </option>
+                ))
+              )}
+            </select>
+          </label>
+        ) : (
+          <div className="rounded-[1rem] border border-dashed border-black/10 bg-white/50 px-4 py-3 text-sm leading-6 text-ink-soft">
+            Mock mode skips Home Assistant I/O and uses the deterministic local
+            fixture inventory.
+          </div>
+        )}
+      </div>
+
+      {liveMode && (
+        <label className="mt-4 flex items-start gap-3 rounded-[1rem] border border-black/8 bg-white/50 px-4 py-3 text-sm text-ink-soft">
+          <input
+            checked={scanLaunchDraft.deep}
+            className="mt-1 h-4 w-4 rounded border-black/20 text-accent"
+            disabled={mutationStatus === 'running' || !canToggleDeep}
+            onChange={(event) => {
+              onUpdateDeep(event.target.checked);
+            }}
+            type="checkbox"
+          />
+          <span className="block leading-6">
+            Deep config analysis
+            <span className="block text-ink-soft">
+              Parse `configuration.yaml` plus supported include patterns from
+              the selected profile&apos;s local `configPath`.
+            </span>
+          </span>
+        </label>
+      )}
+
+      {scanLaunchConstraint && (
+        <p className="mt-4 text-sm text-ink-soft">{scanLaunchConstraint}</p>
+      )}
+    </section>
   );
 }
 

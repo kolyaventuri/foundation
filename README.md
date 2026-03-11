@@ -32,10 +32,8 @@ Short version:
 
 - point the API and CLI at the same SQLite file with `HA_REPAIR_DB_PATH`
 - save and test a live Home Assistant profile through the CLI or API
-- create the live scan through the CLI or `POST /api/scans`
+- start the API and web app, then create the live scan from the browser or `POST /api/scans`
 - open the saved scan in the web app at `http://127.0.0.1:4173`
-
-Current limitation: the web app workbench can review persisted live scans, but its `Run scan` button still creates a mock scan. Live scan creation is CLI/API-driven right now.
 
 ## Safety Contract
 
