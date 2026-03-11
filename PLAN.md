@@ -59,7 +59,12 @@ Core shared types that should remain stable and versioned:
 
 ## Engineering roadmap
 
-### Phase A — Foundation and first vertical slice (in progress)
+### Current status
+- Phase A is complete.
+- Phase B is complete for the current local-first, mock-backed workflow.
+- Phase C is the next active implementation pass.
+
+### Phase A — Foundation and first vertical slice (complete)
 Deliver the smallest useful end-to-end flow with deterministic value.
 
 1. Shared contracts and initial scan model
@@ -76,19 +81,19 @@ Deliver the smallest useful end-to-end flow with deterministic value.
    - Start scan.
    - Fetch scan by id.
    - Fetch findings by scan id.
-   - Track in-memory history now, swap with SQLite in next pass.
+   - Persist scans and history locally in SQLite.
 5. Test baseline
    - Unit tests for capability probe behavior.
    - Unit tests for deterministic rule outcomes.
 
-### Phase B — Trust, previews, and persistence
+### Phase B — Trust, previews, and persistence (complete)
 1. SQLite persistence layer and migrations.
 2. Fix queue state model and preview payloads.
 3. `--dry-run` apply flow with explainable evidence and no live mutation.
 4. Export reports in markdown/json for auditability.
 5. History diff model: resolved/regressed/unchanged findings.
 
-### Phase C — Deep analysis and enrichment
+### Phase C — Deep analysis and enrichment (next)
 1. Read-only deep mode parsing of HA config YAML files.
 2. Additional rule packs (room coverage, labels/floors, assistant context bloat).
 3. Provider adapters for Ollama/OpenAI as non-authoritative enrichment.
@@ -97,6 +102,7 @@ Deliver the smallest useful end-to-end flow with deterministic value.
 ## Implementation notes
 - Workspace shape stays as `apps/web`, `apps/api`, and shared packages (`ha-client`, `scan-engine`, `contracts`, `llm`, `cli`).
 - Discovery should use Home Assistant WebSocket + REST once Phase A API contracts settle.
+- The current Home Assistant adapter remains mock-backed while the persisted scan, preview, export, and dry-run apply flows stabilize.
 - Live writes remain capability-gated, conservative, and blocked behind explicit review + confirmation in v1.
 
 ## Validation strategy
