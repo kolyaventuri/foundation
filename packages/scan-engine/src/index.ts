@@ -1,3 +1,4 @@
+import {createHash} from 'node:crypto';
 import type {
   Finding,
   FindingAdvisory,
@@ -9,8 +10,23 @@ import type {
   FrameworkSummary,
   InventoryEntity,
   InventoryGraph,
+  ScanEnrichment,
+  ScanMode,
+  ScanNote,
+  ScanPassResult,
   ScanRun,
 } from '@ha-repair/contracts';
+
+type RunScanOptions = {
+  backupCheckpoint?: ScanRun['backupCheckpoint'];
+  createdAt?: string;
+  enrichment?: ScanEnrichment;
+  id?: string;
+  mode?: ScanMode;
+  notes?: ScanNote[];
+  passes?: ScanPassResult[];
+  profileName?: string | null;
+};
 
 function createScanId(): string {
   const uuid = globalThis.crypto?.randomUUID?.();
@@ -25,9 +41,9 @@ function createScanId(): string {
 export function createFrameworkSummary(): FrameworkSummary {
   return {
     priorities: [
-      'Replace the mock Home Assistant client with a real authenticated websocket + REST adapter.',
-      'Expand deterministic rule packs for naming, area coverage, and assistant exposure.',
-      'Move from dry-run previews into guarded live apply flows backed by reviewed queue snapshots.',
+      'Run real read-only Home Assistant discovery over authenticated websocket + REST.',
+      'Expand deterministic rule packs for area coverage, assistant bloat, and invalid automation targets.',
+      'Capture optional backup checkpoints before any future live-apply milestone.',
     ],
     surfaces: [
       {
@@ -35,28 +51,28 @@ export function createFrameworkSummary(): FrameworkSummary {
         name: 'API shell',
         state: 'ready',
         summary:
-          'Fastify now exposes persisted profile, scan, history, queue-backed preview, and dry-run apply endpoints.',
+          'Fastify exposes persisted profile, scan, history, checkpoint, queue-backed preview, and dry-run apply endpoints.',
       },
       {
         id: 'web',
         name: 'Guided UI shell',
         state: 'ready',
         summary:
-          'React + Vite render queue-aware scan review flows with explicit preview and dry-run confirmation steps.',
+          'React + Vite render queue-aware scan review flows with pass metadata, scan notes, and explicit preview confirmation.',
       },
       {
         id: 'cli',
         name: 'CLI path',
         state: 'ready',
         summary:
-          'The CLI now manages saved profiles and local scan, findings, queue-backed dry-run apply, and markdown/json export flows.',
+          'The CLI now manages saved profiles plus local or live scan, checkpoint, findings, preview, apply, and export flows.',
       },
       {
         id: 'rules',
         name: 'Repair engine',
         state: 'ready',
         summary:
-          'Deterministic findings now persist with diff summaries, reviewed preview snapshots, and audit-ready exports.',
+          'Deterministic findings persist with diff summaries, pass timing, checkpoint state, and audit-ready exports.',
       },
     ],
     tagline:
@@ -69,9 +85,15 @@ function findDuplicateNameFindings(inventory: InventoryGraph): Finding[] {
   const names = new Map<string, string[]>();
 
   for (const entity of inventory.entities) {
-    const matches = names.get(entity.displayName) ?? [];
+    const normalizedName = entity.displayName.trim();
+
+    if (normalizedName.length === 0) {
+      continue;
+    }
+
+    const matches = names.get(normalizedName) ?? [];
     matches.push(entity.entityId);
-    names.set(entity.displayName, matches);
+    names.set(normalizedName, matches);
   }
 
   return [...names.entries()]
@@ -111,6 +133,135 @@ function findStaleEntities(inventory: InventoryGraph): Finding[] {
       objectIds: [entity.entityId],
       severity: 'low',
       title: `Stale entity ${entity.entityId}`,
+    }));
+}
+
+function findMissingAreaAssignments(inventory: InventoryGraph): Finding[] {
+  return inventory.entities
+    .filter((entity) => {
+      const device = entity.deviceId
+        ? inventory.devices.find(
+            (candidate) => candidate.deviceId === entity.deviceId,
+          )
+        : undefined;
+
+      return !entity.areaId && !device?.areaId;
+    })
+    .map((entity) => ({
+      evidence: `Entity ${entity.entityId} has no direct area assignment and no area inherited from its device.`,
+      id: `missing_area_assignment:${entity.entityId}`,
+      kind: 'missing_area_assignment',
+      objectIds: [entity.entityId],
+      severity: 'medium',
+      title: `Missing area assignment for ${entity.entityId}`,
+    }));
+}
+
+function findDanglingLabelReferences(inventory: InventoryGraph): Finding[] {
+  const knownLabels = new Set(inventory.labels.map((label) => label.labelId));
+  const findings: Finding[] = [];
+
+  for (const entity of inventory.entities) {
+    for (const labelId of entity.labelIds ?? []) {
+      if (knownLabels.has(labelId)) {
+        continue;
+      }
+
+      findings.push({
+        evidence: `Entity ${entity.entityId} references label ${labelId}, which was not present in the label registry snapshot.`,
+        id: `dangling_label_reference:${entity.entityId}:${labelId}`,
+        kind: 'dangling_label_reference',
+        objectIds: [entity.entityId, labelId],
+        severity: 'low',
+        title: `Dangling label reference on ${entity.entityId}`,
+      });
+    }
+  }
+
+  for (const device of inventory.devices) {
+    for (const labelId of device.labelIds ?? []) {
+      if (knownLabels.has(labelId)) {
+        continue;
+      }
+
+      findings.push({
+        evidence: `Device ${device.deviceId} references label ${labelId}, which was not present in the label registry snapshot.`,
+        id: `dangling_label_reference:${device.deviceId}:${labelId}`,
+        kind: 'dangling_label_reference',
+        objectIds: [device.deviceId, labelId],
+        severity: 'low',
+        title: `Dangling label reference on ${device.deviceId}`,
+      });
+    }
+  }
+
+  return findings;
+}
+
+function findAutomationInvalidTargets(inventory: InventoryGraph): Finding[] {
+  const entityIds = new Set(
+    inventory.entities.map((entity) => entity.entityId),
+  );
+
+  return inventory.automations.flatMap((automation) => {
+    const missingTargetIds = automation.targetEntityIds.filter(
+      (entityId) => !entityIds.has(entityId),
+    );
+
+    if (missingTargetIds.length === 0) {
+      return [];
+    }
+
+    return [
+      {
+        evidence: `Automation ${automation.name} references ${missingTargetIds.length} missing entity target(s).`,
+        id: `automation_invalid_target:${automation.automationId}`,
+        kind: 'automation_invalid_target',
+        objectIds: [automation.automationId, ...missingTargetIds],
+        severity: 'high',
+        title: `Automation has invalid targets: ${automation.name}`,
+      },
+    ];
+  });
+}
+
+function findSceneInvalidTargets(inventory: InventoryGraph): Finding[] {
+  const entityIds = new Set(
+    inventory.entities.map((entity) => entity.entityId),
+  );
+
+  return inventory.scenes.flatMap((scene) => {
+    const missingTargetIds = scene.targetEntityIds.filter(
+      (entityId) => !entityIds.has(entityId),
+    );
+
+    if (missingTargetIds.length === 0) {
+      return [];
+    }
+
+    return [
+      {
+        evidence: `Scene ${scene.name} references ${missingTargetIds.length} missing entity target(s).`,
+        id: `scene_invalid_target:${scene.sceneId}`,
+        kind: 'scene_invalid_target',
+        objectIds: [scene.sceneId, ...missingTargetIds],
+        severity: 'medium',
+        title: `Scene has invalid targets: ${scene.name}`,
+      },
+    ];
+  });
+}
+
+function findAssistantContextBloat(inventory: InventoryGraph): Finding[] {
+  return inventory.entities
+    .filter((entity) => (entity.assistantExposures?.length ?? 0) > 1)
+    .map((entity) => ({
+      evidence: `Entity ${entity.entityId} is exposed to ${entity.assistantExposures!.length} assistant surfaces: ${entity.assistantExposures!.join(', ')}.`,
+      id: `assistant_context_bloat:${entity.entityId}`,
+      kind: 'assistant_context_bloat',
+      objectIds: [entity.entityId, ...(entity.assistantExposures ?? [])],
+      severity: 'low',
+      title: `Assistant context bloat for ${entity.entityId}`,
     }));
 }
 
@@ -322,7 +473,12 @@ export function createFixActions(
         return [createStaleEntityAction(inventory, finding)];
       }
 
-      case 'orphaned_entity_device': {
+      case 'assistant_context_bloat':
+      case 'automation_invalid_target':
+      case 'dangling_label_reference':
+      case 'missing_area_assignment':
+      case 'orphaned_entity_device':
+      case 'scene_invalid_target': {
         return [];
       }
     }
@@ -331,71 +487,249 @@ export function createFixActions(
   });
 }
 
+// eslint-disable-next-line max-params
+function createGenericAdvisory(
+  inventory: InventoryGraph,
+  finding: Finding,
+  rationale: string,
+  summary: string,
+  steps: string[],
+  warnings: string[],
+): FindingAdvisory {
+  return {
+    findingId: finding.id,
+    id: `advisory:${finding.id}`,
+    rationale,
+    steps,
+    summary,
+    targets: finding.objectIds.map((objectId, index) => ({
+      id: objectId,
+      kind: index === 0 ? ('entity' as const) : ('device' as const),
+      label: getEntityLabel(inventory, objectId),
+    })),
+    title: `Manual review required for ${finding.title}`,
+    warnings,
+  };
+}
+
 export function createFindingAdvisories(
   inventory: InventoryGraph,
   findings: Finding[],
 ): FindingAdvisory[] {
   return findings.flatMap((finding) => {
-    if (finding.kind !== 'orphaned_entity_device') {
-      return [];
+    switch (finding.kind) {
+      case 'orphaned_entity_device': {
+        const entityId = finding.objectIds[0]!;
+        const missingDeviceId = finding.objectIds[1] ?? null;
+
+        return [
+          {
+            findingId: finding.id,
+            id: `advisory:${finding.id}`,
+            rationale:
+              'Home Assistant does not expose a literal entity registry update for changing device_id through the normal admin websocket API.',
+            steps: [
+              'Confirm whether the referenced device still exists in Home Assistant.',
+              'Repair the source integration or remove and recreate the stale registry entry.',
+              'Run another scan to confirm the orphaned device finding resolves.',
+            ],
+            summary:
+              'This finding stays advisory-only because there is no supported literal Home Assistant mutation for clearing the broken device link.',
+            targets: [
+              {
+                id: entityId,
+                kind: 'entity' as const,
+                label: getEntityLabel(inventory, entityId),
+              },
+              ...(missingDeviceId
+                ? [
+                    {
+                      id: missingDeviceId,
+                      kind: 'device' as const,
+                      label: `Missing device reference ${missingDeviceId}`,
+                    },
+                  ]
+                : []),
+            ],
+            title: `Manual review required for ${entityId}`,
+            warnings: [
+              'Repairing the wrong integration or registry record can break entity grouping, dashboards, or automation assumptions tied to the current registry entry.',
+            ],
+          },
+        ];
+      }
+
+      case 'missing_area_assignment': {
+        return [
+          createGenericAdvisory(
+            inventory,
+            finding,
+            'Area coverage requires operator judgement because the correct room assignment depends on physical placement and dashboard intent.',
+            'Assign the entity or its backing device to an area, then rerun the scan.',
+            [
+              'Review where the entity is physically located.',
+              'Assign an area on the entity or device in Home Assistant.',
+              'Rerun the scan to verify the coverage warning clears.',
+            ],
+            [
+              'Applying the wrong area can distort dashboards, floor plans, and assistant room targeting.',
+            ],
+          ),
+        ];
+      }
+
+      case 'dangling_label_reference': {
+        return [
+          createGenericAdvisory(
+            inventory,
+            finding,
+            'Label cleanup is advisory because Home Assistant label usage often reflects operator-specific organization and automations.',
+            'Review whether the missing label should be recreated or removed from the affected object.',
+            [
+              'Confirm the label still exists or should exist.',
+              'Repair the label assignment on the affected object.',
+              'Rerun the scan to verify the label hygiene warning clears.',
+            ],
+            [
+              'Removing or renaming the wrong label can break dashboards and views that rely on custom grouping.',
+            ],
+          ),
+        ];
+      }
+
+      case 'automation_invalid_target': {
+        return [
+          createGenericAdvisory(
+            inventory,
+            finding,
+            'Automation target repair is advisory because the correct replacement entity must be chosen in Home Assistant or config YAML.',
+            'Review the automation target list and repair or remove the missing entity references.',
+            [
+              'Open the automation definition or YAML source.',
+              'Repair or remove missing entity references.',
+              'Rerun the scan to confirm the invalid target warning clears.',
+            ],
+            [
+              'Repairing the wrong automation target can silently change live behavior or stop the automation from working.',
+            ],
+          ),
+        ];
+      }
+
+      case 'scene_invalid_target': {
+        return [
+          createGenericAdvisory(
+            inventory,
+            finding,
+            'Scene target repair is advisory because scene membership depends on operator intent and live device state.',
+            'Review the scene target list and repair or remove missing entity references.',
+            [
+              'Open the scene definition or YAML source.',
+              'Repair or remove missing entity references.',
+              'Rerun the scan to confirm the invalid scene target warning clears.',
+            ],
+            [
+              'Repairing the wrong scene target can change what a scene controls when it is activated.',
+            ],
+          ),
+        ];
+      }
+
+      case 'assistant_context_bloat': {
+        return [
+          createGenericAdvisory(
+            inventory,
+            finding,
+            'Assistant exposure should be reviewed manually because each voice surface has different naming and exposure expectations.',
+            'Review whether the entity really needs to be exposed to multiple assistant surfaces.',
+            [
+              'Review the entity exposure settings for Assist, Alexa, and HomeKit.',
+              'Disable exposure where the entity is redundant.',
+              'Rerun the scan to confirm the exposure warning clears.',
+            ],
+            [
+              'Removing the wrong exposure can break existing voice routines or household expectations.',
+            ],
+          ),
+        ];
+      }
+
+      case 'duplicate_name':
+      case 'stale_entity': {
+        return [];
+      }
     }
 
-    const entityId = finding.objectIds[0]!;
-    const missingDeviceId = finding.objectIds[1] ?? null;
-
-    return [
-      {
-        findingId: finding.id,
-        id: `advisory:${finding.id}`,
-        rationale:
-          'Home Assistant does not expose a literal entity registry update for changing device_id through the normal admin websocket API.',
-        steps: [
-          'Confirm whether the referenced device still exists in Home Assistant.',
-          'Repair the source integration or remove and recreate the stale registry entry.',
-          'Run another scan to confirm the orphaned device finding resolves.',
-        ],
-        summary:
-          'This finding stays advisory-only because there is no supported literal Home Assistant mutation for clearing the broken device link.',
-        targets: [
-          {
-            id: entityId,
-            kind: 'entity' as const,
-            label: getEntityLabel(inventory, entityId),
-          },
-          ...(missingDeviceId
-            ? [
-                {
-                  id: missingDeviceId,
-                  kind: 'device' as const,
-                  label: `Missing device reference ${missingDeviceId}`,
-                },
-              ]
-            : []),
-        ],
-        title: `Manual review required for ${entityId}`,
-        warnings: [
-          'Repairing the wrong integration or registry record can break entity grouping, dashboards, or automation assumptions tied to the current registry entry.',
-        ],
-      },
-    ];
+    throw new Error('Unhandled finding kind');
   });
+}
+
+function createDefaultEnrichment(): ScanEnrichment {
+  return {
+    findingSummaries: [],
+    provider: 'none',
+    status: 'disabled',
+  };
+}
+
+function buildFindings(inventory: InventoryGraph): Finding[] {
+  return [
+    ...findDuplicateNameFindings(inventory),
+    ...findOrphanedDeviceLinks(inventory),
+    ...findStaleEntities(inventory),
+    ...findMissingAreaAssignments(inventory),
+    ...findDanglingLabelReferences(inventory),
+    ...findAutomationInvalidTargets(inventory),
+    ...findSceneInvalidTargets(inventory),
+    ...findAssistantContextBloat(inventory),
+  ];
+}
+
+export function createScanFingerprint(input: {
+  findings: Finding[];
+  inventory: InventoryGraph;
+  mode: ScanMode;
+  profileName: string | null;
+}): string {
+  return createHash('sha256')
+    .update(
+      JSON.stringify({
+        findings: input.findings,
+        inventory: input.inventory,
+        mode: input.mode,
+        profileName: input.profileName,
+      }),
+    )
+    .digest('hex');
 }
 
 export function runScan(
   inventory: InventoryGraph,
-  profileName: string | null = null,
+  options: RunScanOptions = {},
 ): ScanRun {
-  const findings = [
-    ...findDuplicateNameFindings(inventory),
-    ...findOrphanedDeviceLinks(inventory),
-    ...findStaleEntities(inventory),
-  ];
+  const findings = buildFindings(inventory);
+  const mode = options.mode ?? inventory.source;
+  const profileName = options.profileName ?? null;
+  const fingerprint = createScanFingerprint({
+    findings,
+    inventory,
+    mode,
+    profileName,
+  });
 
   return {
-    createdAt: new Date().toISOString(),
+    createdAt: options.createdAt ?? new Date().toISOString(),
+    enrichment: options.enrichment ?? createDefaultEnrichment(),
     findings,
-    id: createScanId(),
+    fingerprint,
+    id: options.id ?? createScanId(),
     inventory,
+    mode,
+    notes: options.notes ?? [],
+    passes: options.passes ?? [],
     profileName,
+    ...(options.backupCheckpoint
+      ? {backupCheckpoint: options.backupCheckpoint}
+      : {}),
   };
 }

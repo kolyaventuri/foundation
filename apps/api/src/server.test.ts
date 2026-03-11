@@ -35,14 +35,27 @@ function parseJson<T>(value: string): T {
 }
 
 const baselineInventory: InventoryGraph = {
+  areas: [
+    {
+      areaId: 'area.kitchen',
+      name: 'Kitchen',
+    },
+    {
+      areaId: 'area.utility',
+      name: 'Utility',
+    },
+  ],
+  automations: [],
   devices: [
     {
+      areaId: 'area.kitchen',
       deviceId: 'device.kitchen_light',
       name: 'Kitchen Light',
     },
   ],
   entities: [
     {
+      areaId: 'area.kitchen',
       deviceId: 'device.kitchen_light',
       disabledBy: null,
       displayName: 'Kitchen Light',
@@ -51,6 +64,7 @@ const baselineInventory: InventoryGraph = {
       name: null,
     },
     {
+      areaId: 'area.kitchen',
       disabledBy: null,
       displayName: 'Kitchen Light',
       entityId: 'sensor.kitchen_light_power',
@@ -58,6 +72,7 @@ const baselineInventory: InventoryGraph = {
       name: null,
     },
     {
+      areaId: 'area.utility',
       deviceId: 'device.ghost',
       disabledBy: null,
       displayName: 'Orphaned Fan',
@@ -66,18 +81,34 @@ const baselineInventory: InventoryGraph = {
       name: null,
     },
   ],
+  floors: [],
+  labels: [],
+  scenes: [],
   source: 'mock',
 };
 
 const changedInventory: InventoryGraph = {
+  areas: [
+    {
+      areaId: 'area.kitchen',
+      name: 'Kitchen',
+    },
+    {
+      areaId: 'area.utility',
+      name: 'Utility',
+    },
+  ],
+  automations: [],
   devices: [
     {
+      areaId: 'area.kitchen',
       deviceId: 'device.kitchen_light',
       name: 'Kitchen Light',
     },
   ],
   entities: [
     {
+      areaId: 'area.kitchen',
       deviceId: 'device.kitchen_light',
       disabledBy: null,
       displayName: 'Kitchen Light',
@@ -86,6 +117,7 @@ const changedInventory: InventoryGraph = {
       name: null,
     },
     {
+      areaId: 'area.kitchen',
       disabledBy: null,
       displayName: 'Kitchen Light',
       entityId: 'sensor.kitchen_light_power',
@@ -93,6 +125,7 @@ const changedInventory: InventoryGraph = {
       name: null,
     },
     {
+      areaId: 'area.utility',
       deviceId: 'device.ghost',
       disabledBy: null,
       displayName: 'New Orphan',
@@ -101,6 +134,9 @@ const changedInventory: InventoryGraph = {
       name: null,
     },
   ],
+  floors: [],
+  labels: [],
+  scenes: [],
   source: 'mock',
 };
 
@@ -133,7 +169,7 @@ describe('api server', () => {
 
       const body = parseJson<ConnectionTestResponse>(response.body);
       expect(body.result.ok).toBe(true);
-      expect(body.result.capabilities.labels).toBe('supported');
+      expect(body.result.capabilities.labelRegistry.status).toBe('supported');
     } finally {
       await server.close();
     }

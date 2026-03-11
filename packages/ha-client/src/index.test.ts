@@ -14,10 +14,12 @@ describe('ha-client', () => {
   });
 
   it('probes mocked capabilities from endpoint posture', () => {
-    expect(probeCapabilities('http://ha.local:8123').labels).toBe(
-      'unsupported',
+    expect(probeCapabilities('http://ha.local:8123').labelRegistry.status).toBe(
+      'supported',
     );
-    expect(probeCapabilities('https://ha.local:8123').labels).toBe('supported');
+    expect(
+      probeCapabilities('https://ha.local:8123').labelRegistry.status,
+    ).toBe('supported');
   });
 
   it('collects a baseline mock inventory fixture', () => {

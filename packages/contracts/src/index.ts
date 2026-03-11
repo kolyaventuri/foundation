@@ -1,11 +1,32 @@
 export type ProviderKind = 'none' | 'ollama' | 'openai';
 export type SurfaceState = 'ready' | 'planned';
-export type CapabilityStatus = 'supported' | 'unsupported';
+export type ScanMode = 'mock' | 'live';
+export type CapabilityStatus =
+  | 'supported'
+  | 'unsupported'
+  | 'partial'
+  | 'unknown';
 export type FindingSeverity = 'low' | 'medium' | 'high';
 export type FindingKind =
+  | 'assistant_context_bloat'
+  | 'automation_invalid_target'
+  | 'dangling_label_reference'
   | 'duplicate_name'
+  | 'missing_area_assignment'
   | 'orphaned_entity_device'
+  | 'scene_invalid_target'
   | 'stale_entity';
+export type AssistantKind = 'assist' | 'alexa' | 'homekit';
+export type ScanPassName =
+  | 'connection'
+  | 'inventory'
+  | 'config'
+  | 'rules'
+  | 'enrichment';
+export type ScanPassStatus = 'completed' | 'failed' | 'partial' | 'skipped';
+export type ScanNoteSeverity = 'info' | 'warning' | 'error';
+export type BackupCheckpointStatus = 'created' | 'failed' | 'manual_required';
+export type BackupCheckpointMethod = 'manual' | 'supervisor';
 
 export type ConnectionProfile = {
   baseUrl: string;
@@ -24,13 +45,32 @@ export type SavedConnectionProfile = {
   updatedAt: string;
 };
 
+export type CapabilityCheck = {
+  reason?: string;
+  status: CapabilityStatus;
+};
+
+export type CapabilitySet = {
+  areaRegistry: CapabilityCheck;
+  automationMetadata: CapabilityCheck;
+  backups: CapabilityCheck;
+  configFiles: CapabilityCheck;
+  deviceRegistry: CapabilityCheck;
+  entityRegistry: CapabilityCheck;
+  exposureControl: CapabilityCheck;
+  floorRegistry: CapabilityCheck;
+  labelRegistry: CapabilityCheck;
+  sceneMetadata: CapabilityCheck;
+};
+
 export type ConnectionResult = {
   capabilities: CapabilitySet;
   checkedAt: string;
   endpoint: string;
   latencyMs: number;
-  mode: 'mock';
+  mode: ScanMode;
   ok: boolean;
+  warnings: string[];
 };
 
 export type ConnectionTestResponse = {
@@ -50,31 +90,101 @@ export type ProfileDeleteResponse = {
   name: string;
 };
 
-export type CapabilitySet = {
-  entityRegistry: CapabilityStatus;
-  exposureControl: CapabilityStatus;
-  labels: CapabilityStatus;
-  floors: CapabilityStatus;
-};
-
 export type InventoryEntity = {
+  areaId?: string | null;
+  assistantExposures?: AssistantKind[];
   deviceId?: string | null;
   disabledBy?: string | null;
   displayName: string;
   entityId: string;
+  floorId?: string | null;
+  hiddenBy?: string | null;
   isStale: boolean;
+  labelIds?: string[];
   name?: string | null;
+  state?: string | null;
 };
 
 export type InventoryDevice = {
+  areaId?: string | null;
   deviceId: string;
+  floorId?: string | null;
+  labelIds?: string[];
   name: string;
 };
 
+export type InventoryArea = {
+  areaId: string;
+  name: string;
+};
+
+export type InventoryFloor = {
+  floorId: string;
+  name: string;
+};
+
+export type InventoryLabel = {
+  labelId: string;
+  name: string;
+};
+
+export type InventoryAutomation = {
+  automationId: string;
+  name: string;
+  sourcePath?: string;
+  targetEntityIds: string[];
+};
+
+export type InventoryScene = {
+  name: string;
+  sceneId: string;
+  sourcePath?: string;
+  targetEntityIds: string[];
+};
+
+export type ConfigIssueCode =
+  | 'include_outside_root'
+  | 'missing_file'
+  | 'parse_error'
+  | 'permission_denied';
+
+export type ConfigIssue = {
+  code: ConfigIssueCode;
+  filePath: string;
+  message: string;
+  severity: ScanNoteSeverity;
+};
+
+export type ConfigFileStatus =
+  | 'loaded'
+  | 'missing'
+  | 'parse_error'
+  | 'permission_denied'
+  | 'skipped';
+
+export type ConfigFileSummary = {
+  filePath: string;
+  status: ConfigFileStatus;
+  summary: string;
+};
+
+export type ConfigAnalysis = {
+  files: ConfigFileSummary[];
+  issues: ConfigIssue[];
+  loadedFileCount: number;
+  rootPath: string;
+};
+
 export type InventoryGraph = {
+  areas: InventoryArea[];
+  automations: InventoryAutomation[];
+  configAnalysis?: ConfigAnalysis;
   devices: InventoryDevice[];
   entities: InventoryEntity[];
-  source: 'mock';
+  floors: InventoryFloor[];
+  labels: InventoryLabel[];
+  scenes: InventoryScene[];
+  source: ScanMode;
 };
 
 export type Finding = {
@@ -86,11 +196,60 @@ export type Finding = {
   title: string;
 };
 
-export type ScanRun = {
+export type ScanPassResult = {
+  completedAt: string;
+  detail?: string;
+  durationMs: number;
+  name: ScanPassName;
+  startedAt: string;
+  status: ScanPassStatus;
+  summary: string;
+};
+
+export type ScanNote = {
+  id: string;
+  message: string;
+  scope: ScanPassName | 'backup';
+  severity: ScanNoteSeverity;
+};
+
+export type EnrichmentFindingSummary = {
+  findingId: string;
+  summary: string;
+};
+
+export type ScanEnrichment = {
+  error?: string;
+  findingSummaries: EnrichmentFindingSummary[];
+  generatedAt?: string;
+  model?: string;
+  provider: ProviderKind;
+  status: 'completed' | 'disabled' | 'failed' | 'skipped';
+};
+
+export type BackupCheckpoint = {
   createdAt: string;
+  downloadUrl?: string;
+  id: string;
+  localPath?: string;
+  method: BackupCheckpointMethod;
+  notes: string[];
+  scanFingerprint: string;
+  status: BackupCheckpointStatus;
+  summary: string;
+};
+
+export type ScanRun = {
+  backupCheckpoint?: BackupCheckpoint;
+  createdAt: string;
+  enrichment: ScanEnrichment;
   findings: Finding[];
+  fingerprint: string;
   id: string;
   inventory: InventoryGraph;
+  mode: ScanMode;
+  notes: ScanNote[];
+  passes: ScanPassResult[];
   profileName: string | null;
 };
 
@@ -109,6 +268,9 @@ export type ScanDetail = ScanRun & {
 };
 
 export type ScanCreateRequest = {
+  deep?: boolean;
+  llmProvider?: ProviderKind;
+  mode?: ScanMode;
   profileName?: string;
 };
 
@@ -126,14 +288,25 @@ export type ScanFindingsResponse = {
 };
 
 export type ScanHistoryEntry = {
+  backupCheckpointStatus?: BackupCheckpointStatus;
   createdAt: string;
   findingsCount: number;
   id: string;
+  mode: ScanMode;
   profileName: string | null;
 };
 
 export type ScanHistoryResponse = {
   scans: ScanHistoryEntry[];
+};
+
+export type BackupCheckpointCreateRequest = {
+  download?: boolean;
+};
+
+export type BackupCheckpointResponse = {
+  checkpoint: BackupCheckpoint;
+  scanId: string;
 };
 
 export type FixActionKind = 'rename_duplicate_name' | 'review_stale_entity';
@@ -328,12 +501,7 @@ export type ScanExportBundle = {
   diffSummary: ScanDiffSummary;
   findings: Finding[];
   generatedAt: string;
-  scan: {
-    createdAt: string;
-    id: string;
-    inventory: InventoryGraph;
-    profileName: string | null;
-  };
+  scan: ScanRun;
 };
 
 export type ApiErrorResponse = {

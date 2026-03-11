@@ -1,4 +1,5 @@
 import type {
+  BackupCheckpointResponse,
   Finding,
   FindingKind,
   FindingSeverity,
@@ -134,6 +135,10 @@ function formatQueueStatus(value: string): string {
 
 function formatEntryStatus(status: WorkbenchEntry['status']): string {
   return status.replaceAll('_', ' ');
+}
+
+function formatScanMode(value: ScanDetail['mode']): string {
+  return value === 'live' ? 'Live read-only' : 'Mock';
 }
 
 function readRoute(): WorkspaceRoute {
@@ -292,6 +297,7 @@ function createDefaultFilters(): RailFilters {
   };
 }
 
+// eslint-disable-next-line complexity
 export function App() {
   const [route, setRoute] = useState<WorkspaceRoute>(() => readRoute());
   const [historyStatus, setHistoryStatus] = useState<LoadStatus>('idle');
@@ -782,6 +788,43 @@ export function App() {
     }
   }
 
+  async function createBackupCheckpointForScan() {
+    if (!route.scanId || !selectedScan || selectedScan.mode !== 'live') {
+      return;
+    }
+
+    setMutationStatus('running');
+
+    try {
+      await fetchJson<BackupCheckpointResponse>(
+        `/api/scans/${route.scanId}/backup-checkpoint`,
+        {
+          body: JSON.stringify({
+            download: true,
+          }),
+          method: 'POST',
+        },
+      );
+
+      await loadWorkbench(route.scanId, route);
+
+      startTransition(() => {
+        setMutationStatus('ready');
+        setErrorMessage('');
+      });
+    } catch (error) {
+      const message =
+        error instanceof Error
+          ? error.message
+          : 'Unknown backup checkpoint error';
+
+      startTransition(() => {
+        setMutationStatus('error');
+        setErrorMessage(message);
+      });
+    }
+  }
+
   const canStageActiveFinding = canStageFinding(
     activeFinding,
     activeEntry,
@@ -807,7 +850,7 @@ export function App() {
                 </h1>
                 <p className="mt-2 text-sm leading-6 text-ink-soft">
                   {selectedScan
-                    ? `${formatTimestamp(selectedScan.createdAt)} • ${selectedScan.profileName ?? 'No profile'}`
+                    ? `${formatTimestamp(selectedScan.createdAt)} • ${selectedScan.profileName ?? 'No profile'} • ${formatScanMode(selectedScan.mode)}`
                     : 'Loading workbench'}
                 </p>
               </div>
@@ -820,8 +863,19 @@ export function App() {
                   }}
                   type="button"
                 >
-                  Run new mock scan
+                  Run new scan
                 </button>
+                {selectedScan?.mode === 'live' && (
+                  <button
+                    className={secondaryButtonClass}
+                    onClick={() => {
+                      void createBackupCheckpointForScan();
+                    }}
+                    type="button"
+                  >
+                    Capture backup checkpoint
+                  </button>
+                )}
                 <button
                   className={primaryButtonClass}
                   disabled={stagedCount === 0}
@@ -856,6 +910,40 @@ export function App() {
                 </span>
               </div>
             </div>
+            {selectedScan && (
+              <div className="mt-5 grid gap-3 md:grid-cols-3">
+                <article className="rounded-[1rem] border border-black/8 bg-ink-strong/4 px-4 py-3">
+                  <p className="text-xs uppercase tracking-[0.16em] text-ink-soft">
+                    Scan posture
+                  </p>
+                  <p className="mt-2 text-sm leading-6 text-ink-soft">
+                    {formatScanMode(selectedScan.mode)} •{' '}
+                    {selectedScan.passes.length} pass
+                    {selectedScan.passes.length === 1 ? '' : 'es'}
+                  </p>
+                </article>
+                <article className="rounded-[1rem] border border-black/8 bg-ink-strong/4 px-4 py-3">
+                  <p className="text-xs uppercase tracking-[0.16em] text-ink-soft">
+                    Scan notes
+                  </p>
+                  <p className="mt-2 text-sm leading-6 text-ink-soft">
+                    {selectedScan.notes.length === 0
+                      ? 'No scan notes recorded.'
+                      : `${selectedScan.notes.length} note(s) recorded across discovery and config passes.`}
+                  </p>
+                </article>
+                <article className="rounded-[1rem] border border-black/8 bg-ink-strong/4 px-4 py-3">
+                  <p className="text-xs uppercase tracking-[0.16em] text-ink-soft">
+                    Backup checkpoint
+                  </p>
+                  <p className="mt-2 text-sm leading-6 text-ink-soft">
+                    {selectedScan.backupCheckpoint
+                      ? `${selectedScan.backupCheckpoint.status.replaceAll('_', ' ')} • ${selectedScan.backupCheckpoint.summary}`
+                      : 'No backup checkpoint recorded for this scan.'}
+                  </p>
+                </article>
+              </div>
+            )}
             {errorMessage && (
               <p className="mt-4 text-sm text-ink-soft">{errorMessage}</p>
             )}
@@ -935,7 +1023,16 @@ export function App() {
                         value={filters.kind}
                       >
                         <option value="all">All kinds</option>
+                        <option value="assistant_context_bloat">
+                          Assistant
+                        </option>
+                        <option value="automation_invalid_target">
+                          Automation
+                        </option>
+                        <option value="dangling_label_reference">Labels</option>
                         <option value="duplicate_name">Rename</option>
+                        <option value="missing_area_assignment">Areas</option>
+                        <option value="scene_invalid_target">Scenes</option>
                         <option value="stale_entity">Stale</option>
                         <option value="orphaned_entity_device">Manual</option>
                       </select>
@@ -1156,7 +1253,7 @@ function LandingView({
             onClick={onRunScan}
             type="button"
           >
-            Run mock scan
+            Run scan
           </button>
           <span
             className={`inline-flex rounded-full border px-3 py-2 text-[0.75rem] font-semibold tracking-[0.16em] uppercase ${statusToneClasses[historyStatus]}`}
@@ -1209,11 +1306,17 @@ function LandingView({
                     {entry.id}
                   </span>
                   <span className="text-xs uppercase tracking-[0.16em] text-ink-soft">
-                    {entry.profileName ?? 'No profile'}
+                    {(entry.profileName ?? 'No profile') +
+                      ' • ' +
+                      formatScanMode(entry.mode)}
                   </span>
                 </div>
                 <p className="mt-2 text-sm text-ink-soft">
-                  {entry.findingsCount} findings •{' '}
+                  {entry.findingsCount} findings
+                  {entry.backupCheckpointStatus
+                    ? ` • checkpoint ${entry.backupCheckpointStatus.replaceAll('_', ' ')}`
+                    : ''}
+                  {' • '}
                   {formatTimestamp(entry.createdAt)}
                 </p>
               </button>

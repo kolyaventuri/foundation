@@ -4,6 +4,7 @@
   "dependencies": {
     "@ha-repair/contracts": "workspace:*",
     "@ha-repair/ha-client": "workspace:*",
+    "@ha-repair/llm": "workspace:*",
     "@ha-repair/scan-engine": "workspace:*",
     "drizzle-orm": "^0.44.2"
   },

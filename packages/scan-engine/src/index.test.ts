@@ -1,4 +1,5 @@
 import {describe, expect, it} from 'vitest';
+import type {InventoryGraph} from '@ha-repair/contracts';
 import {
   createFindingAdvisories,
   createFixActions,
@@ -6,15 +7,28 @@ import {
   runScan,
 } from './index';
 
-const baselineInventory = {
+const baselineInventory: InventoryGraph = {
+  areas: [
+    {
+      areaId: 'area.kitchen',
+      name: 'Kitchen',
+    },
+    {
+      areaId: 'area.utility',
+      name: 'Utility',
+    },
+  ],
+  automations: [],
   devices: [
     {
+      areaId: 'area.kitchen',
       deviceId: 'device.kitchen_light',
       name: 'Kitchen Light',
     },
   ],
   entities: [
     {
+      areaId: 'area.kitchen',
       deviceId: 'device.kitchen_light',
       disabledBy: null,
       displayName: 'Kitchen Light',
@@ -23,6 +37,7 @@ const baselineInventory = {
       name: null,
     },
     {
+      areaId: 'area.kitchen',
       disabledBy: null,
       displayName: 'Kitchen Light',
       entityId: 'sensor.kitchen_light_power',
@@ -30,6 +45,7 @@ const baselineInventory = {
       name: null,
     },
     {
+      areaId: 'area.utility',
       deviceId: 'device.ghost',
       disabledBy: null,
       displayName: 'Orphaned Fan',
@@ -38,6 +54,9 @@ const baselineInventory = {
       name: null,
     },
   ],
+  floors: [],
+  labels: [],
+  scenes: [],
   source: 'mock' as const,
 };
 
@@ -118,10 +137,12 @@ describe('scan-engine', () => {
       scan.findings,
     );
 
-    expect(advisories).toEqual([
-      expect.objectContaining({
-        findingId: 'orphaned_entity_device:switch.orphaned_fan',
-      }),
-    ]);
+    expect(advisories).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          findingId: 'orphaned_entity_device:switch.orphaned_fan',
+        }),
+      ]),
+    );
   });
 });

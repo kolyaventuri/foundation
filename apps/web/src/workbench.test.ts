@@ -50,8 +50,16 @@ const scan: ScanDetail = {
       title: 'Orphaned entity/device link for switch.orphaned_fan',
     },
   ],
+  enrichment: {
+    findingSummaries: [],
+    provider: 'none',
+    status: 'disabled',
+  },
+  fingerprint: 'scan-fingerprint',
   id: 'scan-1',
   inventory: {
+    areas: [],
+    automations: [],
     devices: [
       {
         deviceId: 'device.kitchen_light',
@@ -83,8 +91,14 @@ const scan: ScanDetail = {
         name: null,
       },
     ],
+    floors: [],
+    labels: [],
+    scenes: [],
     source: 'mock',
   },
+  mode: 'mock',
+  notes: [],
+  passes: [],
   profileName: null,
 };
 

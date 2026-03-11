@@ -14,6 +14,9 @@ import {
 } from 'drizzle-orm/sqlite-core';
 import type {
   ApiErrorResponse,
+  BackupCheckpoint,
+  BackupCheckpointCreateRequest,
+  BackupCheckpointResponse,
   ConnectionProfile,
   ConnectionResult,
   Finding,
@@ -31,12 +34,15 @@ import type {
   FixPreviewResponse,
   FixSelection,
   InventoryGraph,
+  ProviderKind,
   ProfileDeleteResponse,
   SavedConnectionProfile,
+  ScanCreateRequest,
   ScanDetail,
   ScanDiffSummary,
   ScanExportBundle,
   ScanHistoryEntry,
+  ScanMode,
   ScanRun,
   ScanWorkbench,
   ScanWorkbenchResponse,
@@ -49,15 +55,26 @@ import type {
   WorkbenchItemSaveRequest,
   WorkbenchPreviewResponse,
 } from '@ha-repair/contracts';
-import {collectMockInventory, testConnection} from '@ha-repair/ha-client';
+import {
+  collectMockInventory,
+  collectScanData,
+  createBackupCheckpoint as createHomeAssistantBackupCheckpoint,
+  probeCapabilities,
+  testConnection,
+  type BackupCheckpointRequest,
+  type CollectedScanData,
+  type ReadOnlyScanRequest,
+} from '@ha-repair/ha-client';
+import {enrichScan} from '@ha-repair/llm';
 import {
   createFindingAdvisories,
+  createScanFingerprint,
   createFixActions,
   runScan,
 } from '@ha-repair/scan-engine';
 
 const defaultDatabasePath = './data/ha-repair.sqlite';
-const currentSchemaVersion = 3;
+const currentSchemaVersion = 4;
 const defaultProfileSettingKey = 'defaultProfileName';
 
 type StoredWorkbenchItemStatus = 'staged' | 'dry_run_applied';
@@ -80,6 +97,7 @@ const scanRunsTable = sqliteTable(
     profileName: text('profile_name'),
     inventoryJson: text('inventory_json').notNull(),
     findingsCount: integer('findings_count').notNull(),
+    scanJson: text('scan_json'),
   },
   (table) => ({
     idIndex: uniqueIndex('scan_runs_id_idx').on(table.id),
@@ -184,10 +202,16 @@ type ScanWorkbenchRow = typeof scanWorkbenchesTable.$inferSelect;
 type ScanWorkbenchItemRow = typeof scanWorkbenchItemsTable.$inferSelect;
 
 export type RepairServiceOptions = {
+  backupCheckpointProvider?: (
+    request: BackupCheckpointRequest,
+  ) => Promise<BackupCheckpoint>;
   cwd?: string;
   dbPath?: string;
   env?: NodeJS.ProcessEnv;
   inventoryProvider?: () => InventoryGraph | Promise<InventoryGraph>;
+  scanCollector?: (
+    request: ReadOnlyScanRequest & {llmProvider: ProviderKind},
+  ) => Promise<CollectedScanData>;
 };
 
 export class RepairServiceError extends Error {
@@ -211,9 +235,14 @@ export type RepairService = {
     request: {scanId: string} & WorkbenchApplyRequest,
   ) => Promise<WorkbenchApplyResponse>;
   close: () => Promise<void>;
-  createScan: (input?: {profileName?: string}) => Promise<ScanDetail>;
+  createBackupCheckpoint: (
+    scanId: string,
+    request?: BackupCheckpointCreateRequest,
+  ) => Promise<BackupCheckpointResponse>;
+  createScan: (input?: ScanCreateRequest) => Promise<ScanDetail>;
   deleteProfile: (name: string) => Promise<ProfileDeleteResponse>;
   exportScan: (scanId?: string) => Promise<ScanExportBundle>;
+  getBackupCheckpoint: (scanId: string) => Promise<BackupCheckpointResponse>;
   getLatestScanId: () => Promise<string | undefined>;
   getProfile: (name: string) => Promise<SavedConnectionProfile>;
   getScan: (scanId: string) => Promise<ScanDetail>;
@@ -440,6 +469,13 @@ function applyMigrations(database: DatabaseSync) {
     `);
   }
 
+  if (version < 4) {
+    database.exec(`
+      ALTER TABLE scan_runs
+      ADD COLUMN scan_json TEXT;
+    `);
+  }
+
   database.exec(`PRAGMA user_version = ${currentSchemaVersion};`);
 }
 
@@ -566,11 +602,41 @@ function toFinding(row: ScanFindingRow): Finding {
 }
 
 function toScanRun(row: ScanRunRow, findings: Finding[]): ScanRun {
+  const storedScan = row.scanJson
+    ? parseJson<ScanRun>(row.scanJson)
+    : undefined;
+
+  if (storedScan) {
+    return {
+      ...storedScan,
+      createdAt: row.createdAt,
+      findings,
+      id: row.id,
+      inventory:
+        storedScan.inventory ?? parseJson<InventoryGraph>(row.inventoryJson),
+      profileName: row.profileName,
+    };
+  }
+
   return {
     createdAt: row.createdAt,
+    enrichment: {
+      findingSummaries: [],
+      provider: 'none',
+      status: 'disabled',
+    },
     findings,
+    fingerprint: createScanFingerprint({
+      findings,
+      inventory: parseJson<InventoryGraph>(row.inventoryJson),
+      mode: 'mock',
+      profileName: row.profileName,
+    }),
     id: row.id,
     inventory: parseJson<InventoryGraph>(row.inventoryJson),
+    mode: 'mock',
+    notes: [],
+    passes: [],
     profileName: row.profileName,
   };
 }
@@ -698,18 +764,15 @@ function createQueueEntryId(): string {
 }
 
 function createScanExportBundle(scan: ScanDetail): ScanExportBundle {
+  const {diffSummary, ...scanRun} = scan;
+
   return {
     actions: createFixActions(scan.inventory, scan.findings),
     advisories: createFindingAdvisories(scan.inventory, scan.findings),
-    diffSummary: scan.diffSummary,
+    diffSummary,
     findings: scan.findings,
     generatedAt: new Date().toISOString(),
-    scan: {
-      createdAt: scan.createdAt,
-      id: scan.id,
-      inventory: scan.inventory,
-      profileName: scan.profileName,
-    },
+    scan: scanRun,
   };
 }
 
@@ -727,6 +790,7 @@ function formatCommandPayload(
   return JSON.stringify(payload, null, 2);
 }
 
+// eslint-disable-next-line complexity
 export function renderScanExportMarkdown(bundle: ScanExportBundle): string {
   const lines = [
     '# Home Assistant Repair Report',
@@ -735,6 +799,8 @@ export function renderScanExportMarkdown(bundle: ScanExportBundle): string {
     `Scan ID: ${bundle.scan.id}`,
     `Profile: ${bundle.scan.profileName ?? 'No profile'}`,
     `Scanned at: ${bundle.scan.createdAt}`,
+    `Mode: ${bundle.scan.mode}`,
+    `Fingerprint: ${bundle.scan.fingerprint}`,
     `Inventory source: ${bundle.scan.inventory.source}`,
     '',
     '## Diff Summary',
@@ -755,8 +821,71 @@ export function renderScanExportMarkdown(bundle: ScanExportBundle): string {
       bundle.diffSummary.unchangedFindingIds,
     ),
     '',
-    '## Findings',
+    '## Scan Passes',
   ];
+
+  if (bundle.scan.passes.length === 0) {
+    lines.push('No pass metadata recorded for this scan.', '');
+  } else {
+    for (const pass of bundle.scan.passes) {
+      lines.push(
+        `- ${pass.name}: ${pass.status} (${pass.durationMs}ms) - ${pass.summary}`,
+      );
+
+      if (pass.detail) {
+        lines.push(`  Detail: ${pass.detail}`);
+      }
+    }
+
+    lines.push('');
+  }
+
+  lines.push('## Scan Notes');
+
+  if (bundle.scan.notes.length === 0) {
+    lines.push('No scan notes recorded.', '');
+  } else {
+    for (const note of bundle.scan.notes) {
+      lines.push(`- [${note.severity}] ${note.scope}: ${note.message}`);
+    }
+
+    lines.push('');
+  }
+
+  lines.push(
+    '## Enrichment',
+    `- Provider: ${bundle.scan.enrichment.provider}`,
+    `- Status: ${bundle.scan.enrichment.status}`,
+  );
+
+  if (bundle.scan.enrichment.model) {
+    lines.push(`- Model: ${bundle.scan.enrichment.model}`);
+  }
+
+  if (bundle.scan.enrichment.error) {
+    lines.push(`- Error: ${bundle.scan.enrichment.error}`);
+  }
+
+  if (bundle.scan.backupCheckpoint) {
+    lines.push(
+      '',
+      '## Backup Checkpoint',
+      `- Status: ${bundle.scan.backupCheckpoint.status}`,
+      `- Method: ${bundle.scan.backupCheckpoint.method}`,
+      `- Created at: ${bundle.scan.backupCheckpoint.createdAt}`,
+      `- Summary: ${bundle.scan.backupCheckpoint.summary}`,
+    );
+
+    if (bundle.scan.backupCheckpoint.localPath) {
+      lines.push(`- Local path: ${bundle.scan.backupCheckpoint.localPath}`);
+    }
+
+    if (bundle.scan.backupCheckpoint.downloadUrl) {
+      lines.push(`- Download URL: ${bundle.scan.backupCheckpoint.downloadUrl}`);
+    }
+  }
+
+  lines.push('', '## Findings');
 
   if (bundle.findings.length === 0) {
     lines.push('No findings recorded for this scan.', '');
@@ -913,6 +1042,89 @@ export async function createRepairService(
   const databasePath = resolveDatabasePath(options);
   const {client, db} = createDatabaseClient(databasePath);
   const inventoryProvider = options.inventoryProvider ?? collectMockInventory;
+  const scanCollector =
+    options.scanCollector ??
+    (async (
+      request: ReadOnlyScanRequest & {llmProvider: ProviderKind},
+    ): Promise<CollectedScanData> => {
+      if ((request.mode ?? 'mock') === 'live') {
+        return collectScanData(
+          request,
+          options.cwd
+            ? {
+                cwd: options.cwd,
+              }
+            : {},
+        );
+      }
+
+      const inventory = await inventoryProvider();
+      const connectionProfile =
+        request.profile ??
+        ({
+          baseUrl: 'http://mock.local:8123',
+          name: 'mock',
+          token: 'mock-token',
+        } satisfies ConnectionProfile);
+      const connection = await testConnection(connectionProfile, {
+        mode: 'mock',
+      });
+
+      return {
+        connection: {
+          ...connection,
+          capabilities: probeCapabilities(
+            connection.endpoint,
+            connectionProfile.configPath
+              ? {
+                  configPath: connectionProfile.configPath,
+                }
+              : {},
+          ),
+        },
+        inventory,
+        notes: [],
+        passes: [
+          {
+            completedAt: new Date().toISOString(),
+            durationMs: 0,
+            name: 'connection',
+            startedAt: new Date().toISOString(),
+            status: 'completed',
+            summary: 'Mock connection succeeded.',
+          },
+          {
+            completedAt: new Date().toISOString(),
+            durationMs: 0,
+            name: 'inventory',
+            startedAt: new Date().toISOString(),
+            status: 'completed',
+            summary: `Loaded ${inventory.entities.length} mock entities.`,
+          },
+          {
+            completedAt: new Date().toISOString(),
+            durationMs: 0,
+            name: 'config',
+            startedAt: new Date().toISOString(),
+            status: request.deep ? 'partial' : 'skipped',
+            summary: request.deep
+              ? 'Legacy mock inventory provider does not emit deep config metadata.'
+              : 'Deep config analysis was not requested.',
+          },
+        ],
+      };
+    });
+  const backupCheckpointProvider =
+    options.backupCheckpointProvider ??
+    (async (request: BackupCheckpointRequest) =>
+      createHomeAssistantBackupCheckpoint(
+        request,
+        options.cwd
+          ? {
+              cwd: options.cwd,
+            }
+          : {},
+      ));
 
   async function getDefaultProfileName(): Promise<string | undefined> {
     const [row] = await db
@@ -1324,6 +1536,7 @@ export async function createRepairService(
         id: scan.id,
         inventoryJson: JSON.stringify(scan.inventory),
         profileName: scan.profileName,
+        scanJson: JSON.stringify(scan),
       });
 
       await maybeInsertRows(
@@ -1343,6 +1556,19 @@ export async function createRepairService(
     });
 
     return requireScanDetail(scan.id);
+  }
+
+  async function overwriteStoredScan(scan: ScanRun): Promise<void> {
+    await db
+      .update(scanRunsTable)
+      .set({
+        createdAt: scan.createdAt,
+        findingsCount: scan.findings.length,
+        inventoryJson: JSON.stringify(scan.inventory),
+        profileName: scan.profileName,
+        scanJson: JSON.stringify(scan),
+      })
+      .where(eq(scanRunsTable.id, scan.id));
   }
 
   async function getLatestScanId() {
@@ -1506,12 +1732,149 @@ export async function createRepairService(
     };
   }
 
-  async function createScan(input: {profileName?: string} = {}) {
+  async function createScan(input: ScanCreateRequest = {}) {
+    const mode: ScanMode = input.mode ?? 'mock';
+    const deep = input.deep ?? false;
+    const llmProvider: ProviderKind = input.llmProvider ?? 'none';
     const profileName = await resolveRequestedProfileName(input.profileName);
-    const inventory = await inventoryProvider();
-    const scan = runScan(inventory, profileName);
+
+    if (mode === 'live' && !profileName) {
+      throw createServiceError(
+        'invalid_profile',
+        400,
+        'Live scans require a saved or default profile.',
+      );
+    }
+
+    const profileRow = profileName
+      ? await requireProfileRow(profileName)
+      : undefined;
+    const profile = profileRow ? toConnectionProfile(profileRow) : undefined;
+    const collected = await scanCollector({
+      deep,
+      llmProvider,
+      mode,
+      ...(profile ? {profile} : {}),
+    });
+    const scanNotes = [
+      ...collected.notes,
+      ...collected.connection.warnings.map((warning, index) => ({
+        id: `connection-warning:${index}`,
+        message: warning,
+        scope: 'connection' as const,
+        severity: 'warning' as const,
+      })),
+    ];
+    const rulesStartedAt = new Date().toISOString();
+    let scan = runScan(collected.inventory, {
+      mode,
+      notes: scanNotes,
+      passes: collected.passes,
+      profileName,
+    });
+    const rulesCompletedAt = new Date().toISOString();
+    const rulesPass = {
+      completedAt: rulesCompletedAt,
+      durationMs:
+        new Date(rulesCompletedAt).getTime() -
+        new Date(rulesStartedAt).getTime(),
+      name: 'rules' as const,
+      startedAt: rulesStartedAt,
+      status: 'completed' as const,
+      summary: `Generated ${scan.findings.length} deterministic finding(s).`,
+    };
+    const enrichmentStartedAt = new Date().toISOString();
+    const enrichment = await enrichScan(
+      {
+        findings: scan.findings,
+        inventory: scan.inventory,
+        provider: llmProvider,
+      },
+      options.env
+        ? {
+            env: options.env,
+          }
+        : {},
+    );
+    const enrichmentCompletedAt = new Date().toISOString();
+    const enrichmentPass = {
+      completedAt: enrichmentCompletedAt,
+      durationMs:
+        new Date(enrichmentCompletedAt).getTime() -
+        new Date(enrichmentStartedAt).getTime(),
+      name: 'enrichment' as const,
+      startedAt: enrichmentStartedAt,
+      status:
+        enrichment.status === 'completed'
+          ? ('completed' as const)
+          : enrichment.status === 'failed'
+            ? ('failed' as const)
+            : ('skipped' as const),
+      summary:
+        enrichment.status === 'completed'
+          ? `Generated ${enrichment.findingSummaries.length} enrichment summary entries.`
+          : (enrichment.error ?? `Enrichment ${enrichment.status}.`),
+    };
+
+    scan = {
+      ...scan,
+      enrichment,
+      passes: [...collected.passes, rulesPass, enrichmentPass],
+    };
 
     return saveScan(scan);
+  }
+
+  async function getBackupCheckpoint(scanId: string) {
+    const scan = await requireScanDetail(scanId);
+
+    if (!scan.backupCheckpoint) {
+      throw createServiceError(
+        'backup_checkpoint_not_found',
+        404,
+        `No backup checkpoint exists for scan "${scanId}".`,
+      );
+    }
+
+    return {
+      checkpoint: scan.backupCheckpoint,
+      scanId,
+    } satisfies BackupCheckpointResponse;
+  }
+
+  async function createBackupCheckpoint(
+    scanId: string,
+    request: BackupCheckpointCreateRequest = {},
+  ) {
+    const scan = await requireScanDetail(scanId);
+
+    if (scan.mode !== 'live' || !scan.profileName) {
+      throw createServiceError(
+        'backup_checkpoint_unavailable',
+        400,
+        'Backup checkpoints are only available for live scans with a saved profile.',
+      );
+    }
+
+    const profile = toConnectionProfile(
+      await requireProfileRow(scan.profileName),
+    );
+    const checkpoint = await backupCheckpointProvider({
+      profile,
+      scanFingerprint: scan.fingerprint,
+      ...(request.download === undefined ? {} : {download: request.download}),
+    });
+    const {diffSummary, ...scanRun} = scan;
+
+    await overwriteStoredScan({
+      ...scanRun,
+      backupCheckpoint: checkpoint,
+    });
+
+    return {
+      checkpoint,
+      scanId,
+    } satisfies BackupCheckpointResponse;
   }
 
   async function deleteProfile(name: string) {
@@ -1760,11 +2123,25 @@ export async function createRepairService(
         findingsCount: scanRunsTable.findingsCount,
         id: scanRunsTable.id,
         profileName: scanRunsTable.profileName,
+        scanJson: scanRunsTable.scanJson,
       })
       .from(scanRunsTable)
       .orderBy(desc(scanRunsTable.sequence));
 
-    return rows satisfies ScanHistoryEntry[];
+    return rows.map((row) => {
+      const scan = row.scanJson ? parseJson<ScanRun>(row.scanJson) : undefined;
+
+      return {
+        ...(scan?.backupCheckpoint
+          ? {backupCheckpointStatus: scan.backupCheckpoint.status}
+          : {}),
+        createdAt: row.createdAt,
+        findingsCount: row.findingsCount,
+        id: row.id,
+        mode: scan?.mode ?? 'mock',
+        profileName: row.profileName,
+      } satisfies ScanHistoryEntry;
+    });
   }
 
   async function saveProfile(profile: ConnectionProfile) {
@@ -1826,9 +2203,11 @@ export async function createRepairService(
     async close() {
       client.close();
     },
+    createBackupCheckpoint,
     createScan,
     deleteProfile,
     exportScan,
+    getBackupCheckpoint,
     getLatestScanId,
     getProfile,
     getScan,

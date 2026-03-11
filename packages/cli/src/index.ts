@@ -130,6 +130,7 @@ function buildPreviewInputs(
 
 export function buildProgram() {
   const program = new Command();
+  const providerIds = listProviderDescriptors().map((provider) => provider.id);
   const frameworkCommand = program
     .command('framework')
     .description('Inspect the current scaffold status');
@@ -317,28 +318,92 @@ export function buildProgram() {
 
   program
     .command('scan')
-    .description('Run a deterministic scan through the local SQLite service')
+    .description(
+      'Run a deterministic or live read-only scan through the local SQLite service',
+    )
     .option('--profile <name>', 'Saved connection profile name')
+    .addOption(
+      new Option('--mode <mode>', 'Scan mode')
+        .choices(['mock', 'live'])
+        .default('mock'),
+    )
+    .option('--deep', 'Read config files from the configured config path')
+    .addOption(
+      new Option('--llm-provider <provider>', 'Optional enrichment provider')
+        .choices(providerIds)
+        .default('none'),
+    )
     .action(
       async (
         options: {
+          deep?: boolean;
+          llmProvider: 'none' | 'ollama' | 'openai';
+          mode: 'mock' | 'live';
           profile?: string;
         },
         command: Command,
       ) => {
         try {
           const scan = await withService(command, async (service) =>
-            service.createScan(
-              options.profile ? {profileName: options.profile} : {},
-            ),
+            service.createScan({
+              llmProvider: options.llmProvider,
+              mode: options.mode,
+              ...(options.deep === undefined ? {} : {deep: options.deep}),
+              ...(options.profile ? {profileName: options.profile} : {}),
+            }),
           );
 
           printJson({
+            backupCheckpointStatus: scan.backupCheckpoint?.status ?? null,
             findings: scan.findings.length,
+            mode: scan.mode,
+            notes: scan.notes.length,
+            passes: scan.passes.map((pass) => ({
+              name: pass.name,
+              status: pass.status,
+            })),
             profileName: scan.profileName,
             scanId: scan.id,
             scannedAt: scan.createdAt,
           });
+        } catch (error) {
+          reportError(error);
+        }
+      },
+    );
+
+  program
+    .command('checkpoint [scanId]')
+    .description('Create an optional backup checkpoint for a live scan')
+    .option('--download', 'Download the backup artifact locally when possible')
+    .action(
+      async (
+        scanId: string | undefined,
+        options: {
+          download?: boolean;
+        },
+        command: Command,
+      ) => {
+        try {
+          const response = await withService(command, async (service) => {
+            const resolvedScanId = scanId ?? (await service.getLatestScanId());
+
+            if (!resolvedScanId) {
+              throw new RepairServiceError(
+                'scan_not_found',
+                404,
+                'No scans found. Execute `ha-repair scan` first.',
+              );
+            }
+
+            return service.createBackupCheckpoint(resolvedScanId, {
+              ...(options.download === undefined
+                ? {}
+                : {download: options.download}),
+            });
+          });
+
+          printJson(response);
         } catch (error) {
           reportError(error);
         }

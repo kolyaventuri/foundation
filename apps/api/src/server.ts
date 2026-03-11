@@ -2,6 +2,8 @@ import fastify from 'fastify';
 import cors from '@fastify/cors';
 import type {
   ApiErrorResponse,
+  BackupCheckpointCreateRequest,
+  BackupCheckpointResponse,
   ConnectionProfile,
   ConnectionTestResponse,
   FixApplyRequest,
@@ -277,6 +279,39 @@ export async function createServer(options: RepairServiceOptions = {}) {
       }
     },
   );
+
+  server.get<{Params: {id: string}}>(
+    '/api/scans/:id/backup-checkpoint',
+    async (request, reply) => {
+      try {
+        const response: BackupCheckpointResponse =
+          await repairService.getBackupCheckpoint(request.params.id);
+
+        return response;
+      } catch (error) {
+        const [statusCode, payload] = sendErrorResponse(error);
+        return reply.code(statusCode).send(payload);
+      }
+    },
+  );
+
+  server.post<{
+    Body: BackupCheckpointCreateRequest;
+    Params: {id: string};
+  }>('/api/scans/:id/backup-checkpoint', async (request, reply) => {
+    try {
+      const response: BackupCheckpointResponse =
+        await repairService.createBackupCheckpoint(
+          request.params.id,
+          request.body ?? {},
+        );
+
+      return response;
+    } catch (error) {
+      const [statusCode, payload] = sendErrorResponse(error);
+      return reply.code(statusCode).send(payload);
+    }
+  });
 
   server.put<{
     Body: WorkbenchItemSaveRequest;
