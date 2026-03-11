@@ -19,10 +19,12 @@ import type {
   Finding,
   FindingAdvisory,
   FindingKind,
+  FindingTreatment,
   FindingSeverity,
   FixAction,
   FixApplyRequest,
   FixApplyResponse,
+  FixPreviewInput,
   FixQueueEntry,
   FixQueueStatus,
   FixPreviewRequest,
@@ -36,6 +38,16 @@ import type {
   ScanExportBundle,
   ScanHistoryEntry,
   ScanRun,
+  ScanWorkbench,
+  ScanWorkbenchResponse,
+  WorkbenchApplyRequest,
+  WorkbenchApplyResponse,
+  WorkbenchEntry,
+  WorkbenchEntryStatus,
+  WorkbenchItemDeleteResponse,
+  WorkbenchItemMutationResponse,
+  WorkbenchItemSaveRequest,
+  WorkbenchPreviewResponse,
 } from '@ha-repair/contracts';
 import {collectMockInventory, testConnection} from '@ha-repair/ha-client';
 import {
@@ -45,8 +57,10 @@ import {
 } from '@ha-repair/scan-engine';
 
 const defaultDatabasePath = './data/ha-repair.sqlite';
-const currentSchemaVersion = 2;
+const currentSchemaVersion = 3;
 const defaultProfileSettingKey = 'defaultProfileName';
+
+type StoredWorkbenchItemStatus = 'staged' | 'dry_run_applied';
 
 const profilesTable = sqliteTable('profiles', {
   name: text('name').primaryKey(),
@@ -128,10 +142,46 @@ const fixQueueEntriesTable = sqliteTable(
   }),
 );
 
+const scanWorkbenchesTable = sqliteTable(
+  'scan_workbenches',
+  {
+    sequence: integer('sequence').primaryKey({autoIncrement: true}),
+    scanId: text('scan_id').notNull(),
+    createdAt: text('created_at').notNull(),
+    updatedAt: text('updated_at').notNull(),
+    latestPreviewToken: text('latest_preview_token'),
+  },
+  (table) => ({
+    scanIdIndex: uniqueIndex('scan_workbenches_scan_id_idx').on(table.scanId),
+  }),
+);
+
+const scanWorkbenchItemsTable = sqliteTable(
+  'scan_workbench_items',
+  {
+    sequence: integer('sequence').primaryKey({autoIncrement: true}),
+    scanId: text('scan_id').notNull(),
+    findingId: text('finding_id').notNull(),
+    inputsJson: text('inputs_json').notNull(),
+    status: text('status').$type<StoredWorkbenchItemStatus>().notNull(),
+    updatedAt: text('updated_at').notNull(),
+  },
+  (table) => ({
+    scanFindingIndex: uniqueIndex(
+      'scan_workbench_items_scan_id_finding_id_idx',
+    ).on(table.scanId, table.findingId),
+    scanStatusUpdatedIndex: index(
+      'scan_workbench_items_scan_id_status_updated_at_idx',
+    ).on(table.scanId, table.status, table.updatedAt),
+  }),
+);
+
 type ProfilesRow = typeof profilesTable.$inferSelect;
 type ScanRunRow = typeof scanRunsTable.$inferSelect;
 type ScanFindingRow = typeof scanFindingsTable.$inferSelect;
 type FixQueueEntryRow = typeof fixQueueEntriesTable.$inferSelect;
+type ScanWorkbenchRow = typeof scanWorkbenchesTable.$inferSelect;
+type ScanWorkbenchItemRow = typeof scanWorkbenchItemsTable.$inferSelect;
 
 export type RepairServiceOptions = {
   cwd?: string;
@@ -157,6 +207,9 @@ export class RepairServiceError extends Error {
 }
 
 export type RepairService = {
+  applyWorkbench: (
+    request: {scanId: string} & WorkbenchApplyRequest,
+  ) => Promise<WorkbenchApplyResponse>;
   close: () => Promise<void>;
   createScan: (input?: {profileName?: string}) => Promise<ScanDetail>;
   deleteProfile: (name: string) => Promise<ProfileDeleteResponse>;
@@ -165,11 +218,22 @@ export type RepairService = {
   getProfile: (name: string) => Promise<SavedConnectionProfile>;
   getScan: (scanId: string) => Promise<ScanDetail>;
   getScanFindings: (scanId: string) => Promise<Finding[]>;
+  getScanWorkbench: (scanId: string) => Promise<ScanWorkbenchResponse>;
   listHistory: () => Promise<ScanHistoryEntry[]>;
   listProfiles: () => Promise<SavedConnectionProfile[]>;
   previewFixes: (request: FixPreviewRequest) => Promise<FixPreviewResponse>;
+  previewWorkbench: (scanId: string) => Promise<WorkbenchPreviewResponse>;
+  removeWorkbenchItem: (
+    scanId: string,
+    findingId: string,
+  ) => Promise<WorkbenchItemDeleteResponse>;
   resolveDatabasePath: () => string;
   saveProfile: (profile: ConnectionProfile) => Promise<SavedConnectionProfile>;
+  saveWorkbenchItem: (
+    scanId: string,
+    findingId: string,
+    request: WorkbenchItemSaveRequest,
+  ) => Promise<WorkbenchItemMutationResponse>;
   setDefaultProfile: (name: string) => Promise<SavedConnectionProfile>;
   testInlineProfile: (
     profile: Partial<ConnectionProfile>,
@@ -344,6 +408,38 @@ function applyMigrations(database: DatabaseSync) {
     `);
   }
 
+  if (version < 3) {
+    database.exec(`
+      CREATE TABLE IF NOT EXISTS scan_workbenches (
+        sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+        scan_id TEXT NOT NULL UNIQUE,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        latest_preview_token TEXT,
+        FOREIGN KEY (scan_id) REFERENCES scan_runs(id) ON DELETE CASCADE
+      );
+
+      CREATE TABLE IF NOT EXISTS scan_workbench_items (
+        sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+        scan_id TEXT NOT NULL,
+        finding_id TEXT NOT NULL,
+        inputs_json TEXT NOT NULL,
+        status TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        FOREIGN KEY (scan_id) REFERENCES scan_runs(id) ON DELETE CASCADE
+      );
+
+      CREATE UNIQUE INDEX IF NOT EXISTS scan_workbenches_scan_id_idx
+      ON scan_workbenches (scan_id);
+
+      CREATE UNIQUE INDEX IF NOT EXISTS scan_workbench_items_scan_id_finding_id_idx
+      ON scan_workbench_items (scan_id, finding_id);
+
+      CREATE INDEX IF NOT EXISTS scan_workbench_items_scan_id_status_updated_at_idx
+      ON scan_workbench_items (scan_id, status, updated_at);
+    `);
+  }
+
   database.exec(`PRAGMA user_version = ${currentSchemaVersion};`);
 }
 
@@ -419,6 +515,8 @@ function createDatabaseClient(databasePath: string) {
       profilesTable,
       scanFindingsTable,
       scanRunsTable,
+      scanWorkbenchItemsTable,
+      scanWorkbenchesTable,
     },
   });
 
@@ -485,6 +583,61 @@ function toFixQueueEntry(row: FixQueueEntryRow): FixQueueEntry {
     id: row.id,
     ...(lastAppliedAt ? {lastAppliedAt} : {}),
     status: row.status,
+  };
+}
+
+function toStoredPreviewResponse(
+  scanId: string,
+  row: FixQueueEntryRow,
+): FixPreviewResponse {
+  return {
+    actions: parseJson<FixAction[]>(row.actionsJson),
+    advisories: [],
+    generatedAt: row.createdAt,
+    previewToken: row.previewToken,
+    queue: toFixQueueEntry(row),
+    scanId,
+    selection: parseJson<FixSelection>(row.selectionJson),
+  };
+}
+
+function toStoredWorkbenchStatus(
+  status: StoredWorkbenchItemStatus,
+): WorkbenchEntryStatus {
+  return status;
+}
+
+function getFindingTreatment(
+  inventory: InventoryGraph,
+  finding: Finding,
+): FindingTreatment {
+  return createFixActions(inventory, [finding]).length > 0
+    ? 'actionable'
+    : 'advisory';
+}
+
+function toWorkbenchEntry({
+  finding,
+  inventory,
+  row,
+}: {
+  finding: Finding;
+  inventory: InventoryGraph;
+  row: ScanWorkbenchItemRow | undefined;
+}): WorkbenchEntry {
+  const treatment = getFindingTreatment(inventory, finding);
+  const updatedAt = resolveOptionalString(row?.updatedAt ?? null);
+
+  return {
+    findingId: finding.id,
+    savedInputs: row ? parseJson<FixPreviewInput[]>(row.inputsJson) : [],
+    status: row
+      ? toStoredWorkbenchStatus(row.status)
+      : treatment === 'advisory'
+        ? 'advisory'
+        : 'recommended',
+    treatment,
+    ...(updatedAt ? {updatedAt} : {}),
   };
 }
 
@@ -953,6 +1106,204 @@ export async function createRepairService(
     return row;
   }
 
+  async function getScanWorkbenchRow(
+    scanId: string,
+  ): Promise<ScanWorkbenchRow | undefined> {
+    const [row] = await db
+      .select()
+      .from(scanWorkbenchesTable)
+      .where(eq(scanWorkbenchesTable.scanId, scanId))
+      .limit(1);
+
+    return row;
+  }
+
+  async function ensureScanWorkbenchRow(
+    scanId: string,
+  ): Promise<ScanWorkbenchRow> {
+    const existingRow = await getScanWorkbenchRow(scanId);
+
+    if (existingRow) {
+      return existingRow;
+    }
+
+    const timestamp = new Date().toISOString();
+
+    await db.insert(scanWorkbenchesTable).values({
+      createdAt: timestamp,
+      latestPreviewToken: null,
+      scanId,
+      updatedAt: timestamp,
+    });
+
+    const nextRow = await getScanWorkbenchRow(scanId);
+
+    if (!nextRow) {
+      throw createServiceError(
+        'internal_error',
+        500,
+        `Failed to create workbench for scan "${scanId}".`,
+      );
+    }
+
+    return nextRow;
+  }
+
+  async function listScanWorkbenchItemRows(
+    scanId: string,
+  ): Promise<ScanWorkbenchItemRow[]> {
+    return db
+      .select()
+      .from(scanWorkbenchItemsTable)
+      .where(eq(scanWorkbenchItemsTable.scanId, scanId))
+      .orderBy(desc(scanWorkbenchItemsTable.updatedAt));
+  }
+
+  async function getScanWorkbenchItemRow(
+    scanId: string,
+    findingId: string,
+  ): Promise<ScanWorkbenchItemRow | undefined> {
+    const [row] = await db
+      .select()
+      .from(scanWorkbenchItemsTable)
+      .where(
+        and(
+          eq(scanWorkbenchItemsTable.scanId, scanId),
+          eq(scanWorkbenchItemsTable.findingId, findingId),
+        ),
+      )
+      .limit(1);
+
+    return row;
+  }
+
+  function normalizeWorkbenchInputs(
+    findingId: string,
+    inputs: FixPreviewInput[] | undefined,
+  ): FixPreviewInput[] {
+    const nextInputs = inputs ?? [];
+
+    if (nextInputs.some((input) => input.findingId !== findingId)) {
+      throw createServiceError(
+        'invalid_workbench_item',
+        400,
+        `Workbench inputs must target finding "${findingId}".`,
+      );
+    }
+
+    return [...nextInputs].sort((left, right) =>
+      `${left.targetId}:${left.field}`.localeCompare(
+        `${right.targetId}:${right.field}`,
+      ),
+    );
+  }
+
+  async function requireFindingForScan(scanId: string, findingId: string) {
+    const scan = await requireScanDetail(scanId);
+    const finding = scan.findings.find(
+      (candidate) => candidate.id === findingId,
+    );
+
+    if (!finding) {
+      throw createServiceError(
+        'finding_not_found',
+        404,
+        `Finding "${findingId}" was not found for scan "${scanId}".`,
+      );
+    }
+
+    return {
+      finding,
+      scan,
+    };
+  }
+
+  function validateActionableWorkbenchFinding(
+    scan: ScanDetail,
+    finding: Finding,
+    inputs: FixPreviewInput[],
+  ) {
+    const actions = createFixActions(scan.inventory, [finding], inputs);
+
+    if (actions.length === 0) {
+      throw createServiceError(
+        'finding_not_stageable',
+        400,
+        `Finding "${finding.id}" is advisory-only and cannot be staged.`,
+      );
+    }
+
+    const missingInputs = getIncompleteRequiredInputs(actions);
+
+    if (missingInputs.length > 0) {
+      throw createServiceError(
+        'fix_input_required',
+        400,
+        `Provide literal Home Assistant input values before staging: ${formatMissingInputMessage(missingInputs)}.`,
+      );
+    }
+  }
+
+  async function invalidateWorkbenchPreview(
+    scanId: string,
+    updatedAt: string,
+  ): Promise<void> {
+    await db
+      .update(scanWorkbenchItemsTable)
+      .set({
+        status: 'staged',
+      })
+      .where(eq(scanWorkbenchItemsTable.scanId, scanId));
+
+    await db
+      .update(scanWorkbenchesTable)
+      .set({
+        latestPreviewToken: null,
+        updatedAt,
+      })
+      .where(eq(scanWorkbenchesTable.scanId, scanId));
+  }
+
+  async function buildScanWorkbench(scan: ScanDetail): Promise<ScanWorkbench> {
+    const workbenchRow = await ensureScanWorkbenchRow(scan.id);
+    const itemRows = await listScanWorkbenchItemRows(scan.id);
+    const itemRowLookup = new Map(
+      itemRows.map((row) => [row.findingId, row] as const),
+    );
+    const latestQueueRow = workbenchRow.latestPreviewToken
+      ? await getFixQueueEntryRow(scan.id, workbenchRow.latestPreviewToken)
+      : undefined;
+    const latestPreviewToken =
+      workbenchRow.latestPreviewToken && latestQueueRow
+        ? workbenchRow.latestPreviewToken
+        : undefined;
+    const latestQueue = latestQueueRow
+      ? toFixQueueEntry(latestQueueRow)
+      : undefined;
+    const latestPreview =
+      latestQueueRow && latestPreviewToken
+        ? toStoredPreviewResponse(scan.id, latestQueueRow)
+        : undefined;
+    const entries = scan.findings.map((finding) =>
+      toWorkbenchEntry({
+        finding,
+        inventory: scan.inventory,
+        row: itemRowLookup.get(finding.id),
+      }),
+    );
+    const stagedCount = itemRows.length;
+
+    return {
+      entries,
+      isPreviewStale: stagedCount > 0 && !latestPreviewToken,
+      ...(latestPreview ? {latestPreview} : {}),
+      ...(latestPreviewToken ? {latestPreviewToken} : {}),
+      ...(latestQueue ? {latestQueue} : {}),
+      scanId: scan.id,
+      stagedCount,
+    };
+  }
+
   async function resolveRequestedProfileName(
     requestedProfileName?: string,
   ): Promise<string | null> {
@@ -1206,6 +1557,202 @@ export async function createRepairService(
     return readFindings(scanId);
   }
 
+  async function getScanWorkbench(scanId: string) {
+    const scan = await requireScanDetail(scanId);
+    const workbench = await buildScanWorkbench(scan);
+
+    return {
+      scan,
+      workbench,
+    } satisfies ScanWorkbenchResponse;
+  }
+
+  async function saveWorkbenchItem(
+    scanId: string,
+    findingId: string,
+    request: WorkbenchItemSaveRequest,
+  ) {
+    const {finding, scan} = await requireFindingForScan(scanId, findingId);
+    await ensureScanWorkbenchRow(scanId);
+
+    const inputs = normalizeWorkbenchInputs(findingId, request.inputs);
+    validateActionableWorkbenchFinding(scan, finding, inputs);
+    const timestamp = new Date().toISOString();
+
+    await db
+      .insert(scanWorkbenchItemsTable)
+      .values({
+        findingId,
+        inputsJson: JSON.stringify(inputs),
+        scanId,
+        status: 'staged',
+        updatedAt: timestamp,
+      })
+      .onConflictDoUpdate({
+        set: {
+          inputsJson: JSON.stringify(inputs),
+          status: 'staged',
+          updatedAt: timestamp,
+        },
+        target: [
+          scanWorkbenchItemsTable.scanId,
+          scanWorkbenchItemsTable.findingId,
+        ],
+      });
+
+    await invalidateWorkbenchPreview(scanId, timestamp);
+
+    const workbench = await buildScanWorkbench(scan);
+    const entry = workbench.entries.find(
+      (candidate) => candidate.findingId === findingId,
+    );
+
+    if (!entry) {
+      throw createServiceError(
+        'internal_error',
+        500,
+        `Failed to load staged workbench entry for "${findingId}".`,
+      );
+    }
+
+    return {
+      entry,
+      workbench,
+    } satisfies WorkbenchItemMutationResponse;
+  }
+
+  async function removeWorkbenchItem(scanId: string, findingId: string) {
+    const {scan} = await requireFindingForScan(scanId, findingId);
+    await ensureScanWorkbenchRow(scanId);
+
+    const existingRow = await getScanWorkbenchItemRow(scanId, findingId);
+
+    if (existingRow) {
+      const timestamp = new Date().toISOString();
+
+      await db
+        .delete(scanWorkbenchItemsTable)
+        .where(
+          and(
+            eq(scanWorkbenchItemsTable.scanId, scanId),
+            eq(scanWorkbenchItemsTable.findingId, findingId),
+          ),
+        );
+
+      await invalidateWorkbenchPreview(scanId, timestamp);
+    }
+
+    return {
+      deleted: Boolean(existingRow),
+      findingId,
+      workbench: await buildScanWorkbench(scan),
+    } satisfies WorkbenchItemDeleteResponse;
+  }
+
+  async function previewWorkbench(scanId: string) {
+    const scan = await requireScanDetail(scanId);
+    await ensureScanWorkbenchRow(scanId);
+
+    const itemRows = await listScanWorkbenchItemRows(scanId);
+
+    if (itemRows.length === 0) {
+      throw createServiceError(
+        'workbench_empty',
+        400,
+        'Stage at least one actionable finding before building a batch preview.',
+      );
+    }
+
+    const preview = await previewFixes({
+      findingIds: itemRows.map((row) => row.findingId),
+      inputs: itemRows.flatMap((row) =>
+        parseJson<FixPreviewInput[]>(row.inputsJson),
+      ),
+      scanId,
+    });
+
+    await db
+      .update(scanWorkbenchesTable)
+      .set({
+        latestPreviewToken: preview.previewToken,
+        updatedAt: preview.generatedAt,
+      })
+      .where(eq(scanWorkbenchesTable.scanId, scanId));
+
+    return {
+      preview,
+      workbench: await buildScanWorkbench(scan),
+    } satisfies WorkbenchPreviewResponse;
+  }
+
+  async function applyWorkbench(
+    request: {scanId: string} & WorkbenchApplyRequest,
+  ) {
+    if (request.dryRun === false) {
+      throw createServiceError(
+        'dry_run_required',
+        400,
+        'Only dry-run apply is available in Phase B.',
+      );
+    }
+
+    const scan = await requireScanDetail(request.scanId);
+    const workbenchRow = await ensureScanWorkbenchRow(request.scanId);
+    const previewToken = trimOptionalString(
+      resolveOptionalString(workbenchRow.latestPreviewToken),
+    );
+
+    if (!previewToken) {
+      throw createServiceError(
+        'workbench_preview_required',
+        409,
+        'Build a fresh batch preview before running dry-run apply.',
+      );
+    }
+
+    const queueEntryRow = await getFixQueueEntryRow(
+      request.scanId,
+      previewToken,
+    );
+
+    if (!queueEntryRow) {
+      throw createServiceError(
+        'preview_mismatch',
+        409,
+        'The saved workbench preview no longer matches a stored queue snapshot. Build a new preview before applying.',
+      );
+    }
+
+    const selection = parseJson<FixSelection>(queueEntryRow.selectionJson);
+    const apply = await applyFixes({
+      actionIds: selection.actionIds,
+      dryRun: true,
+      previewToken,
+      scanId: request.scanId,
+    });
+    const appliedAt = apply.queue.lastAppliedAt ?? new Date().toISOString();
+
+    await db
+      .update(scanWorkbenchItemsTable)
+      .set({
+        status: 'dry_run_applied',
+        updatedAt: appliedAt,
+      })
+      .where(eq(scanWorkbenchItemsTable.scanId, request.scanId));
+
+    await db
+      .update(scanWorkbenchesTable)
+      .set({
+        updatedAt: appliedAt,
+      })
+      .where(eq(scanWorkbenchesTable.scanId, request.scanId));
+
+    return {
+      apply,
+      workbench: await buildScanWorkbench(scan),
+    } satisfies WorkbenchApplyResponse;
+  }
+
   async function listHistory() {
     const rows = await db
       .select({
@@ -1274,6 +1821,7 @@ export async function createRepairService(
   }
 
   return {
+    applyWorkbench,
     applyFixes,
     async close() {
       client.close();
@@ -1285,13 +1833,17 @@ export async function createRepairService(
     getProfile,
     getScan,
     getScanFindings,
+    getScanWorkbench,
     listHistory,
     listProfiles,
     previewFixes,
+    previewWorkbench,
+    removeWorkbenchItem,
     resolveDatabasePath() {
       return databasePath;
     },
     saveProfile,
+    saveWorkbenchItem,
     setDefaultProfile,
     testInlineProfile,
     testSavedProfile,

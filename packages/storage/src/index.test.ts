@@ -323,7 +323,7 @@ describe('storage service', () => {
     try {
       expect(
         Number(database.prepare('PRAGMA user_version').get()?.user_version),
-      ).toBe(2);
+      ).toBe(3);
       expect(
         database
           .prepare(
@@ -334,6 +334,28 @@ describe('storage service', () => {
             `,
           )
           .get('fix_queue_entries'),
+      ).toBeDefined();
+      expect(
+        database
+          .prepare(
+            `
+              SELECT name
+              FROM sqlite_master
+              WHERE type = 'table' AND name = ?
+            `,
+          )
+          .get('scan_workbenches'),
+      ).toBeDefined();
+      expect(
+        database
+          .prepare(
+            `
+              SELECT name
+              FROM sqlite_master
+              WHERE type = 'table' AND name = ?
+            `,
+          )
+          .get('scan_workbench_items'),
       ).toBeDefined();
     } finally {
       database.close();
@@ -569,6 +591,176 @@ describe('storage service', () => {
         code: 'dry_run_required',
         statusCode: 400,
       });
+    } finally {
+      await secondService.close();
+    }
+  });
+
+  it('persists server-side workbench batches and invalidates previews after staged edits', async () => {
+    const dbPath = createTempDatabasePath();
+    const firstService = await createRepairService({
+      dbPath,
+      inventoryProvider: () => baselineInventory,
+    });
+
+    let scanId = '';
+
+    try {
+      const scan = await firstService.createScan();
+      scanId = scan.id;
+
+      const initialWorkbench = await firstService.getScanWorkbench(scanId);
+      expect(initialWorkbench.workbench.stagedCount).toBe(0);
+      expect(initialWorkbench.workbench.isPreviewStale).toBe(false);
+      expect(
+        initialWorkbench.workbench.entries.find(
+          (entry) => entry.findingId === 'duplicate_name:Kitchen Light',
+        ),
+      ).toMatchObject({
+        status: 'recommended',
+        treatment: 'actionable',
+      });
+      expect(
+        initialWorkbench.workbench.entries.find(
+          (entry) =>
+            entry.findingId === 'orphaned_entity_device:switch.orphaned_fan',
+        ),
+      ).toMatchObject({
+        status: 'advisory',
+        treatment: 'advisory',
+      });
+
+      await expect(
+        firstService.saveWorkbenchItem(
+          scanId,
+          'orphaned_entity_device:switch.orphaned_fan',
+          {},
+        ),
+      ).rejects.toMatchObject({
+        code: 'finding_not_stageable',
+        statusCode: 400,
+      });
+
+      await expect(
+        firstService.saveWorkbenchItem(scanId, 'duplicate_name:Kitchen Light', {
+          inputs: [
+            {
+              field: 'name',
+              findingId: 'duplicate_name:Kitchen Light',
+              targetId: 'light.kitchen_light',
+              value: 'Kitchen Light (light.kitchen_light)',
+            },
+          ],
+        }),
+      ).rejects.toMatchObject({
+        code: 'fix_input_required',
+        statusCode: 400,
+      });
+
+      const stagedDuplicate = await firstService.saveWorkbenchItem(
+        scanId,
+        'duplicate_name:Kitchen Light',
+        {
+          inputs: [
+            {
+              field: 'name',
+              findingId: 'duplicate_name:Kitchen Light',
+              targetId: 'light.kitchen_light',
+              value: 'Kitchen Light (light.kitchen_light)',
+            },
+            {
+              field: 'name',
+              findingId: 'duplicate_name:Kitchen Light',
+              targetId: 'sensor.kitchen_light_power',
+              value: 'Kitchen Light (sensor.kitchen_light_power)',
+            },
+          ],
+        },
+      );
+
+      expect(stagedDuplicate.entry).toMatchObject({
+        findingId: 'duplicate_name:Kitchen Light',
+        status: 'staged',
+      });
+      expect(stagedDuplicate.workbench.stagedCount).toBe(1);
+      expect(stagedDuplicate.workbench.isPreviewStale).toBe(true);
+      expect(stagedDuplicate.workbench.latestPreviewToken).toBeUndefined();
+
+      const stagedStale = await firstService.saveWorkbenchItem(
+        scanId,
+        'stale_entity:sensor.kitchen_light_power',
+        {},
+      );
+      expect(stagedStale.workbench.stagedCount).toBe(2);
+      expect(stagedStale.workbench.entries).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            findingId: 'duplicate_name:Kitchen Light',
+            status: 'staged',
+          }),
+          expect.objectContaining({
+            findingId: 'stale_entity:sensor.kitchen_light_power',
+            status: 'staged',
+          }),
+        ]),
+      );
+
+      const previewResponse = await firstService.previewWorkbench(scanId);
+      expect(previewResponse.preview.selection.findingIds).toEqual([
+        'duplicate_name:Kitchen Light',
+        'stale_entity:sensor.kitchen_light_power',
+      ]);
+      expect(previewResponse.workbench.isPreviewStale).toBe(false);
+      expect(previewResponse.workbench.latestPreviewToken).toBe(
+        previewResponse.preview.previewToken,
+      );
+
+      const applyResponse = await firstService.applyWorkbench({scanId});
+      expect(applyResponse.apply.mode).toBe('dry_run');
+      expect(applyResponse.apply.queue.status).toBe('dry_run_applied');
+      expect(
+        applyResponse.workbench.entries.filter(
+          (entry) => entry.status === 'dry_run_applied',
+        ),
+      ).toHaveLength(2);
+    } finally {
+      await firstService.close();
+    }
+
+    const secondService = await createRepairService({
+      dbPath,
+      inventoryProvider: () => baselineInventory,
+    });
+
+    try {
+      const reopenedWorkbench = await secondService.getScanWorkbench(scanId);
+      expect(reopenedWorkbench.workbench.stagedCount).toBe(2);
+      expect(reopenedWorkbench.workbench.isPreviewStale).toBe(false);
+      expect(
+        reopenedWorkbench.workbench.entries.filter(
+          (entry) => entry.status === 'dry_run_applied',
+        ),
+      ).toHaveLength(2);
+
+      const updatedStale = await secondService.saveWorkbenchItem(
+        scanId,
+        'stale_entity:sensor.kitchen_light_power',
+        {},
+      );
+      expect(updatedStale.workbench.isPreviewStale).toBe(true);
+      expect(updatedStale.workbench.latestPreviewToken).toBeUndefined();
+      expect(
+        updatedStale.workbench.entries.filter(
+          (entry) => entry.status === 'staged',
+        ),
+      ).toHaveLength(2);
+
+      const removedStale = await secondService.removeWorkbenchItem(
+        scanId,
+        'stale_entity:sensor.kitchen_light_power',
+      );
+      expect(removedStale.deleted).toBe(true);
+      expect(removedStale.workbench.stagedCount).toBe(1);
     } finally {
       await secondService.close();
     }

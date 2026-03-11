@@ -14,6 +14,11 @@ import type {
   ScanFindingsResponse,
   ScanHistoryResponse,
   ScanReadResponse,
+  ScanWorkbenchResponse,
+  WorkbenchApplyResponse,
+  WorkbenchItemDeleteResponse,
+  WorkbenchItemMutationResponse,
+  WorkbenchPreviewResponse,
 } from '@ha-repair/contracts';
 import {createServer} from './server';
 
@@ -400,6 +405,150 @@ describe('api server', () => {
       expect(rejectedToken.statusCode).toBe(409);
     } finally {
       await secondServer.close();
+    }
+  });
+
+  it('serves persisted workbench staging, preview, and dry-run apply endpoints', async () => {
+    const server = await createServer({
+      dbPath: createTempDatabasePath(),
+      inventoryProvider: () => baselineInventory,
+    });
+
+    try {
+      const scanResponse = await server.inject({
+        method: 'POST',
+        url: '/api/scans',
+      });
+
+      expect(scanResponse.statusCode).toBe(200);
+      const scan = parseJson<ScanCreateResponse>(scanResponse.body);
+
+      const initialWorkbenchResponse = await server.inject({
+        method: 'GET',
+        url: `/api/scans/${scan.scan.id}/workbench`,
+      });
+
+      expect(initialWorkbenchResponse.statusCode).toBe(200);
+      const initialWorkbench = parseJson<ScanWorkbenchResponse>(
+        initialWorkbenchResponse.body,
+      );
+      expect(initialWorkbench.workbench.stagedCount).toBe(0);
+      expect(initialWorkbench.workbench.entries).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            findingId: 'duplicate_name:Kitchen Light',
+            status: 'recommended',
+          }),
+          expect.objectContaining({
+            findingId: 'orphaned_entity_device:switch.orphaned_fan',
+            status: 'advisory',
+          }),
+        ]),
+      );
+
+      const rejectedAdvisoryStage = await server.inject({
+        method: 'PUT',
+        payload: {},
+        url: `/api/scans/${scan.scan.id}/workbench/items/orphaned_entity_device:switch.orphaned_fan`,
+      });
+
+      expect(rejectedAdvisoryStage.statusCode).toBe(400);
+
+      const stagedDuplicateResponse = await server.inject({
+        method: 'PUT',
+        payload: {
+          inputs: [
+            {
+              field: 'name',
+              findingId: 'duplicate_name:Kitchen Light',
+              targetId: 'light.kitchen_light',
+              value: 'Kitchen Light (light.kitchen_light)',
+            },
+            {
+              field: 'name',
+              findingId: 'duplicate_name:Kitchen Light',
+              targetId: 'sensor.kitchen_light_power',
+              value: 'Kitchen Light (sensor.kitchen_light_power)',
+            },
+          ],
+        },
+        url: `/api/scans/${scan.scan.id}/workbench/items/${encodeURIComponent('duplicate_name:Kitchen Light')}`,
+      });
+
+      expect(stagedDuplicateResponse.statusCode).toBe(200);
+      const stagedDuplicate = parseJson<WorkbenchItemMutationResponse>(
+        stagedDuplicateResponse.body,
+      );
+      expect(stagedDuplicate.entry.status).toBe('staged');
+      expect(stagedDuplicate.workbench.stagedCount).toBe(1);
+
+      const stagedStaleResponse = await server.inject({
+        method: 'PUT',
+        payload: {},
+        url: `/api/scans/${scan.scan.id}/workbench/items/stale_entity:sensor.kitchen_light_power`,
+      });
+
+      expect(stagedStaleResponse.statusCode).toBe(200);
+
+      const previewResponse = await server.inject({
+        method: 'POST',
+        url: `/api/scans/${scan.scan.id}/workbench/preview`,
+      });
+
+      expect(previewResponse.statusCode).toBe(200);
+      const previewBody = parseJson<WorkbenchPreviewResponse>(
+        previewResponse.body,
+      );
+      expect(previewBody.preview.selection.findingIds).toEqual([
+        'duplicate_name:Kitchen Light',
+        'stale_entity:sensor.kitchen_light_power',
+      ]);
+      expect(previewBody.workbench.latestPreviewToken).toBe(
+        previewBody.preview.previewToken,
+      );
+      expect(previewBody.workbench.isPreviewStale).toBe(false);
+
+      const applyResponse = await server.inject({
+        method: 'POST',
+        payload: {
+          dryRun: true,
+        },
+        url: `/api/scans/${scan.scan.id}/workbench/apply`,
+      });
+
+      expect(applyResponse.statusCode).toBe(200);
+      const applyBody = parseJson<WorkbenchApplyResponse>(applyResponse.body);
+      expect(applyBody.apply.queue.status).toBe('dry_run_applied');
+      expect(
+        applyBody.workbench.entries.filter(
+          (entry) => entry.status === 'dry_run_applied',
+        ),
+      ).toHaveLength(2);
+
+      const removedResponse = await server.inject({
+        method: 'DELETE',
+        url: `/api/scans/${scan.scan.id}/workbench/items/stale_entity:sensor.kitchen_light_power`,
+      });
+
+      expect(removedResponse.statusCode).toBe(200);
+      const removedBody = parseJson<WorkbenchItemDeleteResponse>(
+        removedResponse.body,
+      );
+      expect(removedBody.deleted).toBe(true);
+      expect(removedBody.workbench.isPreviewStale).toBe(true);
+      expect(removedBody.workbench.stagedCount).toBe(1);
+
+      const staleApplyResponse = await server.inject({
+        method: 'POST',
+        payload: {
+          dryRun: true,
+        },
+        url: `/api/scans/${scan.scan.id}/workbench/apply`,
+      });
+
+      expect(staleApplyResponse.statusCode).toBe(409);
+    } finally {
+      await server.close();
     }
   });
 });

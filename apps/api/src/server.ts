@@ -17,6 +17,13 @@ import type {
   ScanFindingsResponse,
   ScanHistoryResponse,
   ScanReadResponse,
+  ScanWorkbenchResponse,
+  WorkbenchApplyRequest,
+  WorkbenchApplyResponse,
+  WorkbenchItemDeleteResponse,
+  WorkbenchItemMutationResponse,
+  WorkbenchItemSaveRequest,
+  WorkbenchPreviewResponse,
 } from '@ha-repair/contracts';
 import {listProviderDescriptors} from '@ha-repair/llm';
 import {createFrameworkSummary} from '@ha-repair/scan-engine';
@@ -255,6 +262,91 @@ export async function createServer(options: RepairServiceOptions = {}) {
 
     return response;
   });
+
+  server.get<{Params: {id: string}}>(
+    '/api/scans/:id/workbench',
+    async (request, reply) => {
+      try {
+        const response: ScanWorkbenchResponse =
+          await repairService.getScanWorkbench(request.params.id);
+
+        return response;
+      } catch (error) {
+        const [statusCode, payload] = sendErrorResponse(error);
+        return reply.code(statusCode).send(payload);
+      }
+    },
+  );
+
+  server.put<{
+    Body: WorkbenchItemSaveRequest;
+    Params: {findingId: string; id: string};
+  }>('/api/scans/:id/workbench/items/:findingId', async (request, reply) => {
+    try {
+      const response: WorkbenchItemMutationResponse =
+        await repairService.saveWorkbenchItem(
+          request.params.id,
+          request.params.findingId,
+          request.body ?? {},
+        );
+
+      return response;
+    } catch (error) {
+      const [statusCode, payload] = sendErrorResponse(error);
+      return reply.code(statusCode).send(payload);
+    }
+  });
+
+  server.delete<{Params: {findingId: string; id: string}}>(
+    '/api/scans/:id/workbench/items/:findingId',
+    async (request, reply) => {
+      try {
+        const response: WorkbenchItemDeleteResponse =
+          await repairService.removeWorkbenchItem(
+            request.params.id,
+            request.params.findingId,
+          );
+
+        return response;
+      } catch (error) {
+        const [statusCode, payload] = sendErrorResponse(error);
+        return reply.code(statusCode).send(payload);
+      }
+    },
+  );
+
+  server.post<{Params: {id: string}}>(
+    '/api/scans/:id/workbench/preview',
+    async (request, reply) => {
+      try {
+        const response: WorkbenchPreviewResponse =
+          await repairService.previewWorkbench(request.params.id);
+
+        return response;
+      } catch (error) {
+        const [statusCode, payload] = sendErrorResponse(error);
+        return reply.code(statusCode).send(payload);
+      }
+    },
+  );
+
+  server.post<{Body: WorkbenchApplyRequest; Params: {id: string}}>(
+    '/api/scans/:id/workbench/apply',
+    async (request, reply) => {
+      try {
+        const response: WorkbenchApplyResponse =
+          await repairService.applyWorkbench({
+            scanId: request.params.id,
+            ...request.body,
+          });
+
+        return response;
+      } catch (error) {
+        const [statusCode, payload] = sendErrorResponse(error);
+        return reply.code(statusCode).send(payload);
+      }
+    },
+  );
 
   server.post<{Body: FixPreviewRequest}>(
     '/api/fixes/preview',

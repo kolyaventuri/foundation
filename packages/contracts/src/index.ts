@@ -215,6 +215,8 @@ export type FindingAdvisory = {
   warnings: string[];
 };
 
+export type FindingTreatment = 'actionable' | 'advisory';
+
 export type FixPreviewRequest = {
   findingIds?: string[];
   inputs?: FixPreviewInput[];
@@ -260,6 +262,64 @@ export type FixApplyResponse = {
   queue: FixQueueEntry;
   scanId: string;
   selection: FixSelection;
+};
+
+export type WorkbenchEntryStatus =
+  | 'recommended'
+  | 'staged'
+  | 'advisory'
+  | 'dry_run_applied';
+
+export type WorkbenchEntry = {
+  findingId: string;
+  savedInputs: FixPreviewInput[];
+  status: WorkbenchEntryStatus;
+  treatment: FindingTreatment;
+  updatedAt?: string;
+};
+
+export type ScanWorkbench = {
+  entries: WorkbenchEntry[];
+  isPreviewStale: boolean;
+  latestPreview?: FixPreviewResponse;
+  latestPreviewToken?: string;
+  latestQueue?: FixQueueEntry;
+  scanId: string;
+  stagedCount: number;
+};
+
+export type ScanWorkbenchResponse = {
+  scan: ScanDetail;
+  workbench: ScanWorkbench;
+};
+
+export type WorkbenchItemSaveRequest = {
+  inputs?: FixPreviewInput[];
+};
+
+export type WorkbenchItemMutationResponse = {
+  entry: WorkbenchEntry;
+  workbench: ScanWorkbench;
+};
+
+export type WorkbenchItemDeleteResponse = {
+  deleted: boolean;
+  findingId: string;
+  workbench: ScanWorkbench;
+};
+
+export type WorkbenchPreviewResponse = {
+  preview: FixPreviewResponse;
+  workbench: ScanWorkbench;
+};
+
+export type WorkbenchApplyRequest = {
+  dryRun?: boolean;
+};
+
+export type WorkbenchApplyResponse = {
+  apply: FixApplyResponse;
+  workbench: ScanWorkbench;
 };
 
 export type ScanExportBundle = {
