@@ -1,12 +1,15 @@
 import fastify from 'fastify';
 import cors from '@fastify/cors';
 import type {
+  ApiErrorResponse,
   ConnectionProfile,
   ConnectionTestResponse,
   FrameworkApiResponse,
   HealthResponse,
   ScanCreateResponse,
   ScanFindingsResponse,
+  ScanHistoryResponse,
+  ScanReadResponse,
   ScanRun,
 } from '@ha-repair/contracts';
 import {collectMockInventory, testConnection} from '@ha-repair/ha-client';
@@ -14,6 +17,19 @@ import {listProviderDescriptors} from '@ha-repair/llm';
 import {createFrameworkSummary, runScan} from '@ha-repair/scan-engine';
 
 const scanHistory = new Map<string, ScanRun>();
+
+function buildConnectionProfile(
+  payload: Partial<ConnectionProfile>,
+): ConnectionProfile {
+  const {baseUrl, configPath, name, token} = payload;
+
+  return {
+    baseUrl: baseUrl ?? '',
+    name: name ?? 'default',
+    token: token ?? '',
+    ...(configPath ? {configPath} : {}),
+  };
+}
 
 export function createServer() {
   const server = fastify({
@@ -44,18 +60,21 @@ export function createServer() {
   });
 
   server.post<{Body: Partial<ConnectionProfile>}>(
-    '/api/connections/test',
+    '/api/profiles/test',
     async (request) => {
-      const {baseUrl, configPath, name, token} = request.body;
-      const profile: ConnectionProfile = {
-        baseUrl: baseUrl ?? '',
-        name: name ?? 'default',
-        token: token ?? '',
-        ...(configPath ? {configPath} : {}),
+      const response: ConnectionTestResponse = {
+        result: await testConnection(buildConnectionProfile(request.body)),
       };
 
+      return response;
+    },
+  );
+
+  server.post<{Body: Partial<ConnectionProfile>}>(
+    '/api/connections/test',
+    async (request) => {
       const response: ConnectionTestResponse = {
-        result: await testConnection(profile),
+        result: await testConnection(buildConnectionProfile(request.body)),
       };
 
       return response;
@@ -79,14 +98,18 @@ export function createServer() {
       const scan = scanHistory.get(request.params.id);
 
       if (!scan) {
-        return reply.code(404).send({
+        const errorResponse: ApiErrorResponse = {
           error: 'scan_not_found',
-        });
+        };
+
+        return reply.code(404).send(errorResponse);
       }
 
-      return {
+      const response: ScanReadResponse = {
         scan,
       };
+
+      return response;
     },
   );
 
@@ -96,9 +119,11 @@ export function createServer() {
       const scan = scanHistory.get(request.params.id);
 
       if (!scan) {
-        return reply.code(404).send({
+        const errorResponse: ApiErrorResponse = {
           error: 'scan_not_found',
-        });
+        };
+
+        return reply.code(404).send(errorResponse);
       }
 
       const response: ScanFindingsResponse = {
@@ -111,13 +136,15 @@ export function createServer() {
   );
 
   server.get('/api/history', async () => {
-    return {
+    const response: ScanHistoryResponse = {
       scans: [...scanHistory.values()].map((scan) => ({
         createdAt: scan.createdAt,
         findingsCount: scan.findings.length,
         id: scan.id,
       })),
     };
+
+    return response;
   });
 
   return server;

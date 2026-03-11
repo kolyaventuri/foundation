@@ -72,9 +72,27 @@ export type ScanCreateResponse = {
   scan: ScanRun;
 };
 
+export type ScanReadResponse = {
+  scan: ScanRun;
+};
+
 export type ScanFindingsResponse = {
   findings: Finding[];
   scanId: string;
+};
+
+export type ScanHistoryEntry = {
+  createdAt: string;
+  findingsCount: number;
+  id: string;
+};
+
+export type ScanHistoryResponse = {
+  scans: ScanHistoryEntry[];
+};
+
+export type ApiErrorResponse = {
+  error: string;
 };
 
 export type RuntimeSurface = {

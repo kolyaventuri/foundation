@@ -30,7 +30,7 @@ Phase A is now started with a minimal deterministic vertical slice:
 - shared contracts now include capability, inventory, finding, and scan-run models
 - the Home Assistant client returns a mocked capability probe and a mock inventory fixture
 - the scan engine emits deterministic findings for duplicate names, stale entities, and orphaned entity-device links
-- the API now supports creating scans, reading scans, reading findings, and listing local scan history
-- the CLI now supports `ha-repair scan` and `ha-repair findings [scanId]` for local baseline testing
+- the API now supports profile testing, creating scans, reading scans, reading findings, and listing local scan history
+- the CLI now supports API-backed `ha-repair scan` and `ha-repair findings [scanId]` for the Phase A scan loop
 
 The next implementation pass should add SQLite persistence, dry-run fix previews, and richer deterministic rule packs.
