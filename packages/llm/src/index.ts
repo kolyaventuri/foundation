@@ -247,7 +247,7 @@ async function runOpenAiAdapter(
     };
   }
 
-  const model = options.env?.OPENAI_MODEL?.trim() ?? 'gpt-4.1-mini';
+  const model = options.env?.OPENAI_MODEL?.trim() ?? 'gpt-5-nano';
   const prompts = await renderPromptPair('finding-summaries', {
     context_json: buildFindingSummaryContext(
       request.findings,
