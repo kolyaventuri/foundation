@@ -2,6 +2,7 @@
   "name": "@ha-repair/cli",
   "private": true,
   "dependencies": {
+    "@ha-repair/contracts": "workspace:*",
     "@ha-repair/ha-client": "workspace:*",
     "@ha-repair/llm": "workspace:*",
     "@ha-repair/scan-engine": "workspace:*",
@@ -12,4 +13,3 @@
     "typecheck": "tsc --project tsconfig.json --noEmit"
   }
 }
-

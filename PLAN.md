@@ -1,64 +1,109 @@
-# Home Assistant Repair Console v1
+# Home Assistant Repair Console Plan
 
-## Summary
-- Build a Docker-first, standalone, local-first TypeScript app with two entrypoints: a local web UI for guided cleanup and a CLI for scans, exports, and approved fixes.
-- Use Home Assistant `URL + long-lived token` auth, persist scan history in local SQLite, and make deterministic rules the source of truth. LLMs are optional enrichers only, via a provider adapter (`none`, `ollama`, `openai`).
-- v1 focuses on core hygiene and assistant exposure: entities, devices, areas, labels/floors when available, scenes, automations, and exposure to Assist/Alexa/HomeKit where the data source supports it.
+## Product intent
+Build a Docker-first, standalone, local-first TypeScript app with two entrypoints:
 
-## Public Interfaces
-- CLI surface:
-  - `ha-repair connect test`
-  - `ha-repair scan [--profile] [--config-dir] [--llm-provider]`
-  - `ha-repair findings [scan-id] [--format table|json|md]`
-  - `ha-repair apply [fix-id...] --dry-run`
-  - `ha-repair export [scan-id] [--format md|json]`
-- Local API surface:
-  - `POST /api/profiles/test`
-  - `POST /api/scans`
-  - `GET /api/scans/:id`
-  - `GET /api/scans/:id/findings`
-  - `POST /api/fixes/preview`
-  - `POST /api/fixes/apply`
-  - `GET /api/history`
-- Core shared types:
-  - `ConnectionProfile`, `ScanRun`, `CapabilitySet`, `InventoryGraph`, `Finding`, `FixAction`, `FixPreview`, `ProviderConfig`
+- a local web UI for guided cleanup
+- a CLI for scans, exports, and approved fixes
 
-## Implementation
-- Repo shape: `pnpm` workspace with `apps/web` (React + Vite), `apps/api` (Fastify), and shared packages for `ha-client`, `scan-engine`, `rules`, `llm`, and shared types. Use `xo` and `vitest` workspace-wide.
-- Discovery layer:
-  - Connect through Home Assistant WebSocket plus REST.
-  - Build a normalized graph from runtime data: states, entity/device/area registries, labels/floors when supported, config-entry metadata, and assistant exposure state.
-  - Add capability probing at connect time; unsupported features are marked skipped, not failed.
-  - Optional deep mode accepts a read-only bind mount of the HA config directory and parses `configuration.yaml`, packages, `automations.yaml`, `scenes.yaml`, and assistant filter config.
-- Rule engine:
-  - Deterministic checks create typed findings with severity, evidence, affected objects, confidence, and fixability.
-  - Initial rules: duplicate or ambiguous names, poor room coverage, missing labels, stale/unavailable entities, hidden/disabled clutter, orphaned entity-device relationships, scene/automation references to missing targets, and assistant exposure mismatches or context-bloat risks.
-  - LLM enrichment is limited to classification, naming normalization suggestions, grouping/categorization suggestions, and plain-English repair summaries. No LLM-only suggestion can be applied directly.
-- Repair flow:
-  - UI flow is `Connect -> Scan -> Findings -> Fix Queue -> Apply/Export -> History`.
-  - Every finding supports `ignore`, `queue`, `export`, and `preview`.
-  - Live apply in baseline v1 is guaranteed for exposure changes using the documented exposure WebSocket commands. Registry metadata writes are optional capabilities: enable them only if the runtime probe confirms they are supported; otherwise emit exportable repair plans instead.
-  - YAML-backed systems such as HomeKit filters and YAML Alexa config are analyzed in deep mode, but v1 outputs patch plans/diffs instead of rewriting HA config files.
-- Persistence and packaging:
-  - Store profiles, scan snapshots, findings, fix queue state, and change history in SQLite on a Docker volume.
-  - Ship one Docker image with the API, web UI, and CLI; mount SQLite state read-write and HA config read-only when deep mode is enabled.
+The application should treat deterministic checks as the source of truth, persist scan history locally in SQLite, and keep LLM usage optional for enrichment only.
 
-## Test Plan
-- Scan against a mocked HA instance with no config mount and verify inventory collection, capability probing, and skipped-check behavior.
-- Detect duplicate names, orphaned entities, stale entities, and exposure conflicts from fixture inventories.
-- Parse automation/scene YAML in deep mode and flag missing entity, area, label, or floor references using validation and target extraction.
-- Verify `--dry-run` previews and live exposure apply behavior, including bulk expose/unexpose flows.
-- Verify scan history diffs show resolved, regressed, and unchanged findings across runs.
-- Verify LLM disabled, Ollama, and OpenAI modes all produce identical base findings, with only enrichment varying.
+## Guiding principles
+- **Methodical first**: every finding needs reproducible evidence and deterministic logic.
+- **Trust before writes**: prefer previews and export plans before live mutation.
+- **Capability-aware**: older Home Assistant installs must degrade gracefully with explicit skipped checks.
+- **Local-first**: no SaaS dependency for core functionality.
+
+## v1 Scope
+- Inventory and hygiene coverage across entities, devices, areas, labels/floors where supported.
+- Scene + automation target validation.
+- Assistant exposure checks for Assist, Alexa, and HomeKit where data sources permit.
+
+## Public interfaces
+### CLI
+- `ha-repair connect test`
+- `ha-repair scan [--profile] [--config-dir] [--llm-provider]`
+- `ha-repair findings [scan-id] [--format table|json|md]`
+- `ha-repair apply [fix-id...] --dry-run`
+- `ha-repair export [scan-id] [--format md|json]`
+
+### Local API
+- `POST /api/profiles/test`
+- `POST /api/scans`
+- `GET /api/scans/:id`
+- `GET /api/scans/:id/findings`
+- `POST /api/fixes/preview`
+- `POST /api/fixes/apply`
+- `GET /api/history`
+
+## Domain model anchors
+Core shared types that should remain stable and versioned:
+
+- `ConnectionProfile`
+- `CapabilitySet`
+- `InventoryGraph`
+- `Finding`
+- `FixAction`
+- `FixPreview`
+- `ScanRun`
+- `ProviderConfig`
+
+## Engineering roadmap
+
+### Phase A — Foundation and first vertical slice (in progress)
+Deliver the smallest useful end-to-end flow with deterministic value.
+
+1. Shared contracts and initial scan model
+   - Define capability, inventory, finding, and scan contracts.
+   - Keep scan output serializable and versionable.
+2. Connection and capability probe baseline
+   - Keep mocked connection checks in place while the API shape stabilizes.
+   - Return capability posture explicitly.
+3. Deterministic starter rules
+   - Duplicate/ambiguous names.
+   - Orphaned entity-device relationships.
+   - Stale entities.
+4. Minimal API + CLI scan workflow
+   - Start scan.
+   - Fetch scan by id.
+   - Fetch findings by scan id.
+   - Track in-memory history now, swap with SQLite in next pass.
+5. Test baseline
+   - Unit tests for capability probe behavior.
+   - Unit tests for deterministic rule outcomes.
+
+### Phase B — Trust, previews, and persistence
+1. SQLite persistence layer and migrations.
+2. Fix queue state model and preview payloads.
+3. `--dry-run` apply flow with explainable evidence.
+4. Export reports in markdown/json for auditability.
+5. History diff model: resolved/regressed/unchanged findings.
+
+### Phase C — Deep analysis and enrichment
+1. Read-only deep mode parsing of HA config YAML files.
+2. Additional rule packs (room coverage, labels/floors, assistant context bloat).
+3. Provider adapters for Ollama/OpenAI as non-authoritative enrichment.
+4. Performance tuning for larger Home Assistant inventories.
+
+## Implementation notes
+- Workspace shape stays as `apps/web`, `apps/api`, and shared packages (`ha-client`, `scan-engine`, `contracts`, `llm`, `cli`).
+- Discovery should use Home Assistant WebSocket + REST once Phase A API contracts settle.
+- Live writes remain capability-gated and conservative in v1.
+
+## Validation strategy
+- Run scans against mocked Home Assistant inventory fixtures.
+- Verify deterministic findings from fixture-based tests.
+- Verify API scan lifecycle endpoints.
+- Verify CLI scan + findings loop.
+- Ensure LLM mode changes enrichment only, not base findings.
 
 ## Assumptions
-- v1 is single-user and local; no multi-tenant auth or remote SaaS control plane.
-- Older HA installs may lack some registry or exposure capabilities; the product must degrade gracefully and surface skipped checks clearly.
-- HomeKit and YAML-managed Alexa analysis requires optional config-directory access; API-only mode still covers runtime inventory and documented exposure state.
-- Inference from the docs: use documented list/validation/exposure commands as the stable baseline, and treat broader registry mutations as capability-gated rather than guaranteed.
-- Sources used for the plan:
-  - [Home Assistant WebSocket API](https://developers.home-assistant.io/docs/api/websocket)
-  - [Home Assistant frontend custom strategy example](https://developers.home-assistant.io/docs/frontend/custom-ui/custom-strategy/)
-  - [Alexa Smart Home integration docs](https://www.home-assistant.io/integrations/alexa.smart_home/)
-  - [HomeKit Bridge integration docs](https://www.home-assistant.io/integrations/homekit/)
-  - [Entity registry and disabling entities](https://developers.home-assistant.io/docs/entity_registry_disabled_by)
+- v1 is single-user and local-only.
+- Some Home Assistant capabilities may be absent and should render as skipped.
+- YAML assistant configuration analysis requires optional read-only config directory access.
+
+## Primary sources
+- https://developers.home-assistant.io/docs/api/websocket
+- https://www.home-assistant.io/integrations/alexa.smart_home/
+- https://www.home-assistant.io/integrations/homekit/
+- https://developers.home-assistant.io/docs/entity_registry_disabled_by

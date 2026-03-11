@@ -1,7 +1,54 @@
-import type {ConnectionProfile, ConnectionResult} from '@ha-repair/contracts';
+import type {
+  CapabilitySet,
+  ConnectionProfile,
+  ConnectionResult,
+  InventoryGraph,
+} from '@ha-repair/contracts';
 
 function normalizeBaseUrl(baseUrl: string) {
   return baseUrl.trim().replace(/\/+$/u, '');
+}
+
+function probeCapabilities(endpoint: string): CapabilitySet {
+  const isSecure = endpoint.startsWith('https://');
+
+  return {
+    entityRegistry: 'supported',
+    exposureControl: 'supported',
+    floors: isSecure ? 'supported' : 'unsupported',
+    labels: isSecure ? 'supported' : 'unsupported',
+  };
+}
+
+export function collectMockInventory(): InventoryGraph {
+  return {
+    devices: [
+      {
+        deviceId: 'device.living_room_lamp',
+        name: 'Living Room Lamp',
+      },
+    ],
+    entities: [
+      {
+        deviceId: 'device.living_room_lamp',
+        entityId: 'light.living_room_lamp',
+        friendlyName: 'Living Room Lamp',
+        isStale: false,
+      },
+      {
+        entityId: 'sensor.living_room_lamp_power',
+        friendlyName: 'Living Room Lamp',
+        isStale: true,
+      },
+      {
+        deviceId: 'device.missing',
+        entityId: 'switch.orphaned_fan',
+        friendlyName: 'Bedroom Fan',
+        isStale: false,
+      },
+    ],
+    source: 'mock',
+  };
 }
 
 export async function testConnection(
@@ -10,6 +57,7 @@ export async function testConnection(
   const endpoint = normalizeBaseUrl(profile.baseUrl);
 
   return {
+    capabilities: probeCapabilities(endpoint),
     checkedAt: new Date().toISOString(),
     endpoint,
     latencyMs: 0,
@@ -18,4 +66,4 @@ export async function testConnection(
   };
 }
 
-export {normalizeBaseUrl};
+export {normalizeBaseUrl, probeCapabilities};
