@@ -162,20 +162,26 @@ const baselineInventory: InventoryGraph = {
   entities: [
     {
       deviceId: 'device.kitchen_light',
+      disabledBy: null,
+      displayName: 'Kitchen Light',
       entityId: 'light.kitchen_light',
-      friendlyName: 'Kitchen Light',
       isStale: false,
+      name: null,
     },
     {
+      disabledBy: null,
+      displayName: 'Kitchen Light',
       entityId: 'sensor.kitchen_light_power',
-      friendlyName: 'Kitchen Light',
       isStale: true,
+      name: null,
     },
     {
       deviceId: 'device.ghost',
+      disabledBy: null,
+      displayName: 'Orphaned Fan',
       entityId: 'switch.orphaned_fan',
-      friendlyName: 'Orphaned Fan',
       isStale: false,
+      name: null,
     },
   ],
   source: 'mock',
@@ -191,20 +197,26 @@ const changedInventory: InventoryGraph = {
   entities: [
     {
       deviceId: 'device.kitchen_light',
+      disabledBy: null,
+      displayName: 'Kitchen Light',
       entityId: 'light.kitchen_light',
-      friendlyName: 'Kitchen Light',
       isStale: false,
+      name: null,
     },
     {
+      disabledBy: null,
+      displayName: 'Kitchen Light',
       entityId: 'sensor.kitchen_light_power',
-      friendlyName: 'Kitchen Light',
       isStale: false,
+      name: null,
     },
     {
       deviceId: 'device.ghost',
+      disabledBy: null,
+      displayName: 'New Orphan',
       entityId: 'switch.new_orphan',
-      friendlyName: 'New Orphan',
       isStale: false,
+      name: null,
     },
   ],
   source: 'mock',
@@ -409,7 +421,28 @@ describe('storage service', () => {
       const scan = await firstService.createScan();
       scanId = scan.id;
 
-      const preview = await firstService.previewFixes({scanId});
+      await expect(firstService.previewFixes({scanId})).rejects.toMatchObject({
+        code: 'fix_input_required',
+        statusCode: 400,
+      });
+
+      const preview = await firstService.previewFixes({
+        inputs: [
+          {
+            field: 'name',
+            findingId: 'duplicate_name:Kitchen Light',
+            targetId: 'light.kitchen_light',
+            value: 'Kitchen Light (light.kitchen_light)',
+          },
+          {
+            field: 'name',
+            findingId: 'duplicate_name:Kitchen Light',
+            targetId: 'sensor.kitchen_light_power',
+            value: 'Kitchen Light (sensor.kitchen_light_power)',
+          },
+        ],
+        scanId,
+      });
       previewActions = preview.actions;
       previewSelection = preview.selection;
       previewToken = preview.previewToken;
@@ -417,23 +450,24 @@ describe('storage service', () => {
       expect(preview.actions.map((action) => action.kind)).toEqual(
         expect.arrayContaining([
           'rename_duplicate_name',
-          'repair_orphaned_entity_device',
           'review_stale_entity',
         ]),
       );
       expect(preview.actions.map((action) => action.id)).toEqual(
         expect.arrayContaining([
           'fix:duplicate_name:Kitchen Light:rename',
-          'fix:orphaned_entity_device:switch.orphaned_fan:repair-link',
           'fix:stale_entity:sensor.kitchen_light_power:review-stale',
         ]),
       );
+      expect(preview.advisories.map((advisory) => advisory.findingId)).toEqual([
+        'orphaned_entity_device:switch.orphaned_fan',
+      ]);
       expect(preview.previewToken).toEqual(expect.any(String));
       expect(preview.queue.createdAt).toEqual(expect.any(String));
       expect(preview.queue.id).toEqual(expect.any(String));
       expect(preview.queue.status).toBe('pending_review');
-      expect(preview.selection.actionIds).toHaveLength(3);
-      expect(preview.selection.findingIds).toHaveLength(3);
+      expect(preview.selection.actionIds).toHaveLength(2);
+      expect(preview.selection.findingIds).toHaveLength(2);
       const previewAction = preview.actions[0];
       expect(previewAction).toBeDefined();
       if (!previewAction) {
@@ -443,6 +477,7 @@ describe('storage service', () => {
       expect(previewAction.requiresConfirmation).toBe(true);
       expect(previewAction.intent.length).toBeGreaterThan(0);
       expect(previewAction.warnings.length).toBeGreaterThan(0);
+      expect(previewAction.commands.length).toBeGreaterThan(0);
 
       const previewArtifact = previewAction.artifacts[0];
       expect(previewArtifact).toBeDefined();
@@ -451,16 +486,16 @@ describe('storage service', () => {
       }
 
       expect(previewArtifact.kind).toBe('text_diff');
-      expect(previewArtifact.content).toContain('@@ entity/');
+      expect(previewArtifact.content).toContain('@@ entity_registry/');
 
-      const previewEdit = previewAction.edits[0];
-      expect(previewEdit).toBeDefined();
-      if (!previewEdit) {
-        throw new Error('Expected preview edit');
+      const previewCommand = previewAction.commands[0];
+      expect(previewCommand).toBeDefined();
+      if (!previewCommand) {
+        throw new Error('Expected preview command');
       }
 
-      expect(previewEdit.fieldPath.length).toBeGreaterThan(0);
-      expect(previewEdit.targetId.length).toBeGreaterThan(0);
+      expect(previewCommand.payload.type).toBe('config/entity_registry/update');
+      expect(previewCommand.targetId.length).toBeGreaterThan(0);
 
       const previewTarget = previewAction.targets[0];
       expect(previewTarget).toBeDefined();
@@ -557,9 +592,16 @@ describe('storage service', () => {
           }),
         ]),
       );
+      expect(exportBundle.advisories).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            findingId: 'orphaned_entity_device:switch.orphaned_fan',
+          }),
+        ]),
+      );
       expect(exportBundle.generatedAt).toEqual(expect.any(String));
       expect(exportBundle.scan.id).toBe(scan.id);
-      expect(exportBundle.actions).toHaveLength(3);
+      expect(exportBundle.actions).toHaveLength(2);
 
       const markdown = renderScanExportMarkdown(exportBundle);
       const normalizedMarkdown = markdown
@@ -567,108 +609,17 @@ describe('storage service', () => {
         .replace(/Scan ID: .+/u, 'Scan ID: <scanId>')
         .replace(/Scanned at: .+/u, 'Scanned at: <scannedAt>');
 
-      expect(normalizedMarkdown).toMatchInlineSnapshot(`
-        "# Home Assistant Repair Report
-
-        Generated: <generatedAt>
-        Scan ID: <scanId>
-        Profile: No profile
-        Scanned at: <scannedAt>
-        Inventory source: mock
-
-        ## Diff Summary
-        - Previous scan: None
-        - Regressed count: 3
-        - Regressed finding IDs: duplicate_name:Kitchen Light, orphaned_entity_device:switch.orphaned_fan, stale_entity:sensor.kitchen_light_power
-        - Resolved count: 0
-        - Resolved finding IDs: None
-        - Unchanged count: 0
-        - Unchanged finding IDs: None
-
-        ## Findings
-        ### Duplicate name: Kitchen Light
-        - ID: duplicate_name:Kitchen Light
-        - Kind: duplicate_name
-        - Severity: medium
-        - Evidence: Found 2 entities named "Kitchen Light".
-        - Objects: light.kitchen_light, sensor.kitchen_light_power
-
-        ### Orphaned entity/device link for switch.orphaned_fan
-        - ID: orphaned_entity_device:switch.orphaned_fan
-        - Kind: orphaned_entity_device
-        - Severity: high
-        - Evidence: Entity switch.orphaned_fan references missing device device.ghost.
-        - Objects: switch.orphaned_fan, device.ghost
-
-        ### Stale entity sensor.kitchen_light_power
-        - ID: stale_entity:sensor.kitchen_light_power
-        - Kind: stale_entity
-        - Severity: low
-        - Evidence: Entity sensor.kitchen_light_power is marked stale by inventory collection.
-        - Objects: sensor.kitchen_light_power
-
-        ## Fix Actions
-
-        ### Rename duplicate entities for Kitchen Light
-        - Action ID: fix:duplicate_name:Kitchen Light:rename
-        - Finding ID: duplicate_name:Kitchen Light
-        - Kind: rename_duplicate_name
-        - Risk: medium
-        - Intent: Rename every duplicated entity label so each entity can be reviewed and addressed unambiguously.
-        - Rationale: Duplicate friendly names create ambiguous cleanup and assistant experiences.
-        - Requires confirmation: yes
-        - Targets: Kitchen Light (light.kitchen_light) [entity], Kitchen Light (sensor.kitchen_light_power) [entity]
-        - Edits: Rename light.kitchen_light to remove the duplicate friendly name collision. (friendlyName: Kitchen Light -> Kitchen Light (light.kitchen_light)), Rename sensor.kitchen_light_power to remove the duplicate friendly name collision. (friendlyName: Kitchen Light -> Kitchen Light (sensor.kitchen_light_power))
-        - Warnings: Renaming entities can affect dashboards, automations, and voice-assistant phrases that reference the current friendly name.
-        - Steps: Review each entity sharing the duplicate name., Choose a disambiguated friendly name for each duplicate entity., Apply the naming change after confirming the new labels in Home Assistant.
-        - Artifact: friendly-name-review.diff (text_diff)
-        \`\`\`diff
-        @@ entity/light.kitchen_light
-        - friendlyName: "Kitchen Light"
-        + friendlyName: "Kitchen Light (light.kitchen_light)"
-        @@ entity/sensor.kitchen_light_power
-        - friendlyName: "Kitchen Light"
-        + friendlyName: "Kitchen Light (sensor.kitchen_light_power)"
-        \`\`\`
-
-        ### Repair missing device link for switch.orphaned_fan
-        - Action ID: fix:orphaned_entity_device:switch.orphaned_fan:repair-link
-        - Finding ID: orphaned_entity_device:switch.orphaned_fan
-        - Kind: repair_orphaned_entity_device
-        - Risk: high
-        - Intent: Remove the broken entity-to-device link so the registry no longer references a missing device.
-        - Rationale: Missing device links usually indicate stale registry state or a partially removed integration.
-        - Requires confirmation: yes
-        - Targets: Orphaned Fan (switch.orphaned_fan) [entity], Missing device reference device.ghost [device]
-        - Edits: Clear the broken device link from switch.orphaned_fan. (deviceId: device.ghost -> null)
-        - Warnings: Clearing the wrong device link can break entity grouping, dashboards, or automation assumptions tied to the current registry record.
-        - Steps: Confirm whether the referenced device still exists in Home Assistant., Relink the entity to the correct device or remove the broken registry entry., Rescan after the registry cleanup to confirm the orphan is gone.
-        - Artifact: entity-device-link-review.diff (text_diff)
-        \`\`\`diff
-        @@ entity/switch.orphaned_fan
-        - deviceId: "device.ghost"
-        + deviceId: null
-        \`\`\`
-
-        ### Review stale entity sensor.kitchen_light_power
-        - Action ID: fix:stale_entity:sensor.kitchen_light_power:review-stale
-        - Finding ID: stale_entity:sensor.kitchen_light_power
-        - Kind: review_stale_entity
-        - Risk: low
-        - Intent: Disable the stale entity in the registry so it no longer behaves like an active automation surface.
-        - Rationale: Stale entities often represent integrations or helpers that can be disabled or removed safely.
-        - Requires confirmation: yes
-        - Targets: Kitchen Light (sensor.kitchen_light_power) [entity]
-        - Edits: Mark sensor.kitchen_light_power as user-disabled in the entity registry. (disabledBy: null -> user)
-        - Warnings: Disabling an entity will stop downstream dashboards or automations from seeing it as an active source.
-        - Steps: Verify the entity is no longer needed., Disable or remove the stale entity from the registry or source integration., Run another scan to confirm the stale entity finding resolves.
-        - Artifact: stale-entity-review.diff (text_diff)
-        \`\`\`diff
-        @@ entity/sensor.kitchen_light_power
-        - disabledBy: null
-        + disabledBy: "user"
-        \`\`\`"
-      `);
+      expect(normalizedMarkdown).toContain('## Fix Actions');
+      expect(normalizedMarkdown).toContain(
+        'Commands: No literal Home Assistant payloads generated yet.',
+      );
+      expect(normalizedMarkdown).toContain('## Advisory Findings');
+      expect(normalizedMarkdown).toContain(
+        'This finding stays advisory-only because there is no supported literal Home Assistant mutation for clearing the broken device link.',
+      );
+      expect(normalizedMarkdown).toContain(
+        '"type": "config/entity_registry/update"',
+      );
     } finally {
       await service.close();
     }

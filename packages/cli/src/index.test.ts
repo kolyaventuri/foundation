@@ -138,7 +138,16 @@ describe('cli', () => {
     expect(findings.length).toBeGreaterThan(0);
 
     const previewResult = await runCliCommand(
-      ['preview', findings[0]!.id, '--scan', scanSummary.scanId],
+      [
+        'preview',
+        findings[0]!.id,
+        '--scan',
+        scanSummary.scanId,
+        '--name',
+        'light.living_room_lamp=Living Room Lamp (light.living_room_lamp)',
+        '--name',
+        'sensor.living_room_lamp_power=Living Room Lamp (sensor.living_room_lamp_power)',
+      ],
       dbPath,
     );
     expect(previewResult.exitCode).toBe(0);
@@ -156,6 +165,8 @@ describe('cli', () => {
     }
 
     expect(previewAction.requiresConfirmation).toBe(true);
+    expect(previewAction.commands).toHaveLength(2);
+    expect(preview.advisories).toHaveLength(0);
 
     const previewArtifact = previewAction.artifacts[0];
     expect(previewArtifact).toBeDefined();
@@ -163,15 +174,15 @@ describe('cli', () => {
       throw new Error('Expected preview artifact');
     }
 
-    expect(previewArtifact.content).toContain('@@ entity/');
+    expect(previewArtifact.content).toContain('@@ entity_registry/');
 
-    const previewEdit = previewAction.edits[0];
-    expect(previewEdit).toBeDefined();
-    if (!previewEdit) {
-      throw new Error('Expected preview edit');
+    const previewCommand = previewAction.commands[0];
+    expect(previewCommand).toBeDefined();
+    if (!previewCommand) {
+      throw new Error('Expected preview command');
     }
 
-    expect(previewEdit.fieldPath.length).toBeGreaterThan(0);
+    expect(previewCommand.payload.type).toBe('config/entity_registry/update');
 
     const applySelectedResult = await runCliCommand(
       [

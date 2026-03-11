@@ -1,7 +1,13 @@
 import type {
   Finding,
+  FindingAdvisory,
   FixAction,
+  FixArtifact,
+  FixCommand,
+  FixPreviewInput,
+  FixRequiredInput,
   FrameworkSummary,
+  InventoryEntity,
   InventoryGraph,
   ScanRun,
 } from '@ha-repair/contracts';
@@ -63,15 +69,15 @@ function findDuplicateNameFindings(inventory: InventoryGraph): Finding[] {
   const names = new Map<string, string[]>();
 
   for (const entity of inventory.entities) {
-    const matches = names.get(entity.friendlyName) ?? [];
+    const matches = names.get(entity.displayName) ?? [];
     matches.push(entity.entityId);
-    names.set(entity.friendlyName, matches);
+    names.set(entity.displayName, matches);
   }
 
   return [...names.entries()]
     .filter(([, entityIds]) => entityIds.length > 1)
     .map(([name, entityIds]) => ({
-      evidence: `Found ${entityIds.length} entities named "${name}".`,
+      evidence: `Found ${entityIds.length} entities displayed as "${name}".`,
       id: `duplicate_name:${name}`,
       kind: 'duplicate_name',
       objectIds: entityIds,
@@ -108,35 +114,34 @@ function findStaleEntities(inventory: InventoryGraph): Finding[] {
     }));
 }
 
-function getEntityLabel(inventory: InventoryGraph, entityId: string): string {
-  const entity = inventory.entities.find(
+function getEntity(
+  inventory: InventoryGraph,
+  entityId: string,
+): InventoryEntity | undefined {
+  return inventory.entities.find(
     (candidate) => candidate.entityId === entityId,
   );
+}
+
+function getEntityLabel(inventory: InventoryGraph, entityId: string): string {
+  const entity = getEntity(inventory, entityId);
 
   if (!entity) {
     return entityId;
   }
 
-  return `${entity.friendlyName} (${entity.entityId})`;
+  return `${entity.displayName} (${entity.entityId})`;
 }
 
-function getEntityFriendlyName(
-  inventory: InventoryGraph,
-  entityId: string,
-): string | undefined {
-  return inventory.entities.find((candidate) => candidate.entityId === entityId)
-    ?.friendlyName;
-}
-
-function formatScalar(value: string | null): string {
-  return value === null ? 'null' : `"${value}"`;
+function formatScalar(value: string | null | undefined): string {
+  return value === null || value === undefined ? 'null' : `"${value}"`;
 }
 
 function createDiffArtifact(
   actionId: string,
   lines: string[],
   label: string,
-): FixAction['artifacts'][number] {
+): FixArtifact {
   return {
     content: lines.join('\n'),
     id: `${actionId}:diff`,
@@ -145,183 +150,234 @@ function createDiffArtifact(
   };
 }
 
+function createNameRecommendation(entity: InventoryEntity): string {
+  return `${entity.displayName} (${entity.entityId})`;
+}
+
+function indexInputs(inputs: FixPreviewInput[]): Map<string, FixPreviewInput> {
+  return new Map(
+    inputs.map((input) => [
+      `${input.findingId}:${input.targetId}:${input.field}`,
+      input,
+    ]),
+  );
+}
+
+function createDuplicateNameAction(
+  inventory: InventoryGraph,
+  finding: Finding,
+  indexedInputs: Map<string, FixPreviewInput>,
+): FixAction {
+  const requiredInputs: FixRequiredInput[] = finding.objectIds.map(
+    (entityId, index) => {
+      const entity = getEntity(inventory, entityId);
+      const input = indexedInputs.get(`${finding.id}:${entityId}:name`);
+
+      return {
+        currentValue: entity?.name ?? null,
+        field: 'name',
+        id: `input:${finding.id}:${index}:name`,
+        ...(input?.value ? {providedValue: input.value} : {}),
+        ...(entity ? {recommendedValue: createNameRecommendation(entity)} : {}),
+        summary: `Provide the exact Home Assistant entity registry name to assign to ${entityId}.`,
+        targetId: entityId,
+      };
+    },
+  );
+
+  const hasAllNames = requiredInputs.every((input) => input.providedValue);
+  const commands: FixCommand[] = hasAllNames
+    ? requiredInputs.map((input, index) => ({
+        id: `command:${finding.id}:${index}:entity_registry_update`,
+        payload: {
+          entity_id: input.targetId,
+          name: input.providedValue!,
+          type: 'config/entity_registry/update',
+        },
+        summary: `Send config/entity_registry/update for ${input.targetId} with the reviewed name override.`,
+        targetId: input.targetId,
+        transport: 'websocket',
+      }))
+    : [];
+
+  const artifacts =
+    commands.length === 0
+      ? []
+      : [
+          createDiffArtifact(
+            `fix:${finding.id}:rename`,
+            requiredInputs.flatMap((input) => [
+              `@@ entity_registry/${input.targetId}`,
+              `- name: ${formatScalar(input.currentValue)}`,
+              `+ name: ${formatScalar(input.providedValue)}`,
+            ]),
+            'entity-registry-name-review.diff',
+          ),
+        ];
+
+  return {
+    artifacts,
+    commands,
+    findingId: finding.id,
+    id: `fix:${finding.id}:rename`,
+    intent:
+      'Send explicit entity registry rename commands so each duplicate display label can be reviewed and resolved with literal Home Assistant payloads.',
+    kind: 'rename_duplicate_name',
+    rationale:
+      'Duplicate display names create ambiguous cleanup and assistant experiences, but the final registry name must be operator-reviewed before sending.',
+    requiredInputs,
+    requiresConfirmation: true,
+    risk: 'medium',
+    steps: [
+      'Review each entity sharing the duplicate display name.',
+      'Provide the exact entity registry name to send for each selected entity.',
+      'Review the resulting websocket payloads before dry-run apply.',
+    ],
+    targets: finding.objectIds.map((entityId) => ({
+      id: entityId,
+      kind: 'entity' as const,
+      label: getEntityLabel(inventory, entityId),
+    })),
+    title: `Rename duplicate entities for ${finding.title.replace('Duplicate name: ', '')}`,
+    warnings: [
+      'Renaming entities can affect dashboards, automations, and voice-assistant phrases that reference the current display name.',
+    ],
+  };
+}
+
+function createStaleEntityAction(
+  inventory: InventoryGraph,
+  finding: Finding,
+): FixAction {
+  const entityId = finding.objectIds[0]!;
+  const entity = getEntity(inventory, entityId);
+  const command: FixCommand = {
+    id: `command:${finding.id}:entity_registry_update`,
+    payload: {
+      disabled_by: 'user',
+      entity_id: entityId,
+      type: 'config/entity_registry/update',
+    },
+    summary: `Send config/entity_registry/update for ${entityId} with disabled_by set to user.`,
+    targetId: entityId,
+    transport: 'websocket',
+  };
+
+  return {
+    artifacts: [
+      createDiffArtifact(
+        `fix:${finding.id}:review-stale`,
+        [
+          `@@ entity_registry/${entityId}`,
+          `- disabled_by: ${formatScalar(entity?.disabledBy ?? null)}`,
+          '+ disabled_by: "user"',
+        ],
+        'entity-registry-disable-review.diff',
+      ),
+    ],
+    commands: [command],
+    findingId: finding.id,
+    id: `fix:${finding.id}:review-stale`,
+    intent:
+      'Disable the stale entity through the entity registry so it no longer behaves like an active automation surface.',
+    kind: 'review_stale_entity',
+    rationale:
+      'Stale entities often represent integrations or helpers that can be disabled or removed safely.',
+    requiredInputs: [],
+    requiresConfirmation: true,
+    risk: 'low',
+    steps: [
+      'Verify the entity is no longer needed.',
+      'Review the websocket update payload that disables the entity.',
+      'Run another scan to confirm the stale entity finding resolves.',
+    ],
+    targets: [
+      {
+        id: entityId,
+        kind: 'entity' as const,
+        label: getEntityLabel(inventory, entityId),
+      },
+    ],
+    title: `Review stale entity ${entityId}`,
+    warnings: [
+      'Disabling an entity will stop downstream dashboards or automations from seeing it as an active source.',
+    ],
+  };
+}
+
 export function createFixActions(
   inventory: InventoryGraph,
   findings: Finding[],
+  inputs: FixPreviewInput[] = [],
 ): FixAction[] {
-  return findings.map((finding) => {
+  const indexedInputs = indexInputs(inputs);
+
+  return findings.flatMap((finding) => {
     switch (finding.kind) {
       case 'duplicate_name': {
-        const edits = finding.objectIds.map((entityId, index) => {
-          const before =
-            getEntityFriendlyName(inventory, entityId) ?? finding.title;
-          const after = `${before} (${entityId})`;
-
-          return {
-            after,
-            before,
-            fieldPath: 'friendlyName',
-            id: `edit:${finding.id}:${index}:friendly_name`,
-            summary: `Rename ${entityId} to remove the duplicate friendly name collision.`,
-            targetId: entityId,
-          };
-        });
-
-        const targets = finding.objectIds.map((entityId) => ({
-          id: entityId,
-          kind: 'entity' as const,
-          label: getEntityLabel(inventory, entityId),
-        }));
-
-        const artifact = createDiffArtifact(
-          `fix:${finding.id}:rename`,
-          edits.flatMap((edit) => [
-            `@@ entity/${edit.targetId}`,
-            `- friendlyName: ${formatScalar(edit.before)}`,
-            `+ friendlyName: ${formatScalar(edit.after)}`,
-          ]),
-          'friendly-name-review.diff',
-        );
-
-        return {
-          artifacts: [artifact],
-          edits,
-          findingId: finding.id,
-          id: `fix:${finding.id}:rename`,
-          intent:
-            'Rename every duplicated entity label so each entity can be reviewed and addressed unambiguously.',
-          kind: 'rename_duplicate_name',
-          rationale:
-            'Duplicate friendly names create ambiguous cleanup and assistant experiences.',
-          requiresConfirmation: true,
-          risk: 'medium',
-          steps: [
-            'Review each entity sharing the duplicate name.',
-            'Choose a disambiguated friendly name for each duplicate entity.',
-            'Apply the naming change after confirming the new labels in Home Assistant.',
-          ],
-          targets,
-          title: `Rename duplicate entities for ${finding.title.replace('Duplicate name: ', '')}`,
-          warnings: [
-            'Renaming entities can affect dashboards, automations, and voice-assistant phrases that reference the current friendly name.',
-          ],
-        };
-      }
-
-      case 'orphaned_entity_device': {
-        const entityId = finding.objectIds[0]!;
-        const missingDeviceId = finding.objectIds[1] ?? null;
-        const edit = {
-          after: null,
-          before: missingDeviceId,
-          fieldPath: 'deviceId',
-          id: `edit:${finding.id}:device_id`,
-          summary: `Clear the broken device link from ${entityId}.`,
-          targetId: entityId,
-        };
-        const artifact = createDiffArtifact(
-          `fix:${finding.id}:repair-link`,
-          [
-            `@@ entity/${entityId}`,
-            `- deviceId: ${formatScalar(edit.before)}`,
-            `+ deviceId: ${formatScalar(edit.after)}`,
-          ],
-          'entity-device-link-review.diff',
-        );
-
-        return {
-          artifacts: [artifact],
-          edits: [edit],
-          findingId: finding.id,
-          id: `fix:${finding.id}:repair-link`,
-          intent:
-            'Remove the broken entity-to-device link so the registry no longer references a missing device.',
-          kind: 'repair_orphaned_entity_device',
-          rationale:
-            'Missing device links usually indicate stale registry state or a partially removed integration.',
-          requiresConfirmation: true,
-          risk: 'high',
-          steps: [
-            'Confirm whether the referenced device still exists in Home Assistant.',
-            'Relink the entity to the correct device or remove the broken registry entry.',
-            'Rescan after the registry cleanup to confirm the orphan is gone.',
-          ],
-          targets: [
-            {
-              id: entityId,
-              kind: 'entity' as const,
-              label: getEntityLabel(inventory, entityId),
-            },
-            ...(missingDeviceId
-              ? [
-                  {
-                    id: missingDeviceId,
-                    kind: 'device' as const,
-                    label: `Missing device reference ${missingDeviceId}`,
-                  },
-                ]
-              : []),
-          ],
-          title: `Repair missing device link for ${finding.objectIds[0]}`,
-          warnings: [
-            'Clearing the wrong device link can break entity grouping, dashboards, or automation assumptions tied to the current registry record.',
-          ],
-        };
+        return [createDuplicateNameAction(inventory, finding, indexedInputs)];
       }
 
       case 'stale_entity': {
-        const entityId = finding.objectIds[0]!;
-        const edit = {
-          after: 'user',
-          before: null,
-          fieldPath: 'disabledBy',
-          id: `edit:${finding.id}:disabled_by`,
-          summary: `Mark ${entityId} as user-disabled in the entity registry.`,
-          targetId: entityId,
-        };
-        const artifact = createDiffArtifact(
-          `fix:${finding.id}:review-stale`,
-          [
-            `@@ entity/${entityId}`,
-            `- disabledBy: ${formatScalar(edit.before)}`,
-            `+ disabledBy: ${formatScalar(edit.after)}`,
-          ],
-          'stale-entity-review.diff',
-        );
+        return [createStaleEntityAction(inventory, finding)];
+      }
 
-        return {
-          artifacts: [artifact],
-          edits: [edit],
-          findingId: finding.id,
-          id: `fix:${finding.id}:review-stale`,
-          intent:
-            'Disable the stale entity in the registry so it no longer behaves like an active automation surface.',
-          kind: 'review_stale_entity',
-          rationale:
-            'Stale entities often represent integrations or helpers that can be disabled or removed safely.',
-          requiresConfirmation: true,
-          risk: 'low',
-          steps: [
-            'Verify the entity is no longer needed.',
-            'Disable or remove the stale entity from the registry or source integration.',
-            'Run another scan to confirm the stale entity finding resolves.',
-          ],
-          targets: [
-            {
-              id: entityId,
-              kind: 'entity' as const,
-              label: getEntityLabel(inventory, entityId),
-            },
-          ],
-          title: `Review stale entity ${finding.objectIds[0]}`,
-          warnings: [
-            'Disabling an entity will stop downstream dashboards or automations from seeing it as an active source.',
-          ],
-        };
+      case 'orphaned_entity_device': {
+        return [];
       }
     }
 
     throw new Error('Unhandled finding kind');
+  });
+}
+
+export function createFindingAdvisories(
+  inventory: InventoryGraph,
+  findings: Finding[],
+): FindingAdvisory[] {
+  return findings.flatMap((finding) => {
+    if (finding.kind !== 'orphaned_entity_device') {
+      return [];
+    }
+
+    const entityId = finding.objectIds[0]!;
+    const missingDeviceId = finding.objectIds[1] ?? null;
+
+    return [
+      {
+        findingId: finding.id,
+        id: `advisory:${finding.id}`,
+        rationale:
+          'Home Assistant does not expose a literal entity registry update for changing device_id through the normal admin websocket API.',
+        steps: [
+          'Confirm whether the referenced device still exists in Home Assistant.',
+          'Repair the source integration or remove and recreate the stale registry entry.',
+          'Run another scan to confirm the orphaned device finding resolves.',
+        ],
+        summary:
+          'This finding stays advisory-only because there is no supported literal Home Assistant mutation for clearing the broken device link.',
+        targets: [
+          {
+            id: entityId,
+            kind: 'entity' as const,
+            label: getEntityLabel(inventory, entityId),
+          },
+          ...(missingDeviceId
+            ? [
+                {
+                  id: missingDeviceId,
+                  kind: 'device' as const,
+                  label: `Missing device reference ${missingDeviceId}`,
+                },
+              ]
+            : []),
+        ],
+        title: `Manual review required for ${entityId}`,
+        warnings: [
+          'Repairing the wrong integration or registry record can break entity grouping, dashboards, or automation assumptions tied to the current registry entry.',
+        ],
+      },
+    ];
   });
 }
 

@@ -39,20 +39,26 @@ const baselineInventory: InventoryGraph = {
   entities: [
     {
       deviceId: 'device.kitchen_light',
+      disabledBy: null,
+      displayName: 'Kitchen Light',
       entityId: 'light.kitchen_light',
-      friendlyName: 'Kitchen Light',
       isStale: false,
+      name: null,
     },
     {
+      disabledBy: null,
+      displayName: 'Kitchen Light',
       entityId: 'sensor.kitchen_light_power',
-      friendlyName: 'Kitchen Light',
       isStale: true,
+      name: null,
     },
     {
       deviceId: 'device.ghost',
+      disabledBy: null,
+      displayName: 'Orphaned Fan',
       entityId: 'switch.orphaned_fan',
-      friendlyName: 'Orphaned Fan',
       isStale: false,
+      name: null,
     },
   ],
   source: 'mock',
@@ -68,20 +74,26 @@ const changedInventory: InventoryGraph = {
   entities: [
     {
       deviceId: 'device.kitchen_light',
+      disabledBy: null,
+      displayName: 'Kitchen Light',
       entityId: 'light.kitchen_light',
-      friendlyName: 'Kitchen Light',
       isStale: false,
+      name: null,
     },
     {
+      disabledBy: null,
+      displayName: 'Kitchen Light',
       entityId: 'sensor.kitchen_light_power',
-      friendlyName: 'Kitchen Light',
       isStale: false,
+      name: null,
     },
     {
       deviceId: 'device.ghost',
+      disabledBy: null,
+      displayName: 'New Orphan',
       entityId: 'switch.new_orphan',
-      friendlyName: 'New Orphan',
       isStale: false,
+      name: null,
     },
   ],
   source: 'mock',
@@ -287,6 +299,20 @@ describe('api server', () => {
       const previewResponse = await secondServer.inject({
         method: 'POST',
         payload: {
+          inputs: [
+            {
+              field: 'name',
+              findingId: 'duplicate_name:Kitchen Light',
+              targetId: 'light.kitchen_light',
+              value: 'Kitchen Light (light.kitchen_light)',
+            },
+            {
+              field: 'name',
+              findingId: 'duplicate_name:Kitchen Light',
+              targetId: 'sensor.kitchen_light_power',
+              value: 'Kitchen Light (sensor.kitchen_light_power)',
+            },
+          ],
           scanId: secondScan.scan.id,
         },
         url: '/api/fixes/preview',
@@ -294,12 +320,13 @@ describe('api server', () => {
 
       expect(previewResponse.statusCode).toBe(200);
       const previewBody = parseJson<FixPreviewResponse>(previewResponse.body);
-      expect(previewBody.actions).toHaveLength(2);
+      expect(previewBody.actions).toHaveLength(1);
+      expect(previewBody.advisories).toHaveLength(1);
       expect(previewBody.previewToken).toEqual(expect.any(String));
       expect(previewBody.queue.createdAt).toEqual(expect.any(String));
       expect(previewBody.queue.id).toEqual(expect.any(String));
       expect(previewBody.queue.status).toBe('pending_review');
-      expect(previewBody.selection.actionIds).toHaveLength(2);
+      expect(previewBody.selection.actionIds).toHaveLength(1);
       const previewAction = previewBody.actions[0];
       expect(previewAction).toBeDefined();
       if (!previewAction) {
@@ -314,15 +341,15 @@ describe('api server', () => {
         throw new Error('Expected preview artifact');
       }
 
-      expect(previewArtifact.content).toContain('@@ entity/');
+      expect(previewArtifact.content).toContain('@@ entity_registry/');
 
-      const previewEdit = previewAction.edits[0];
-      expect(previewEdit).toBeDefined();
-      if (!previewEdit) {
-        throw new Error('Expected preview edit');
+      const previewCommand = previewAction.commands[0];
+      expect(previewCommand).toBeDefined();
+      if (!previewCommand) {
+        throw new Error('Expected preview command');
       }
 
-      expect(previewEdit.fieldPath.length).toBeGreaterThan(0);
+      expect(previewCommand.payload.type).toBe('config/entity_registry/update');
 
       const applyResponse = await secondServer.inject({
         method: 'POST',
@@ -349,7 +376,7 @@ describe('api server', () => {
       const rejectedApply = await secondServer.inject({
         method: 'POST',
         payload: {
-          actionIds: [...previewBody.selection.actionIds].reverse(),
+          actionIds: ['fix:duplicate_name:Kitchen Light:rename:unexpected'],
           dryRun: true,
           previewToken: previewBody.previewToken,
           scanId: secondScan.scan.id,

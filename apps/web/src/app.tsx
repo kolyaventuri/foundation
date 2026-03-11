@@ -10,7 +10,7 @@ import type {
 } from '@ha-repair/contracts';
 import {listProviderDescriptors} from '@ha-repair/llm';
 import {createFrameworkSummary} from '@ha-repair/scan-engine';
-import {startTransition, useEffect, useState} from 'react';
+import {startTransition, type ReactNode, useEffect, useState} from 'react';
 
 type LoadStatus = 'idle' | 'loading' | 'ready' | 'error';
 type MutationStatus = 'idle' | 'running' | 'ready' | 'error';
@@ -99,6 +99,7 @@ export function App() {
   const [selectedScanId, setSelectedScanId] = useState<string>();
   const [selectedScan, setSelectedScan] = useState<ScanDetail>();
   const [selectedFindingIds, setSelectedFindingIds] = useState<string[]>([]);
+  const [renameInputs, setRenameInputs] = useState<Record<string, string>>({});
   const [preview, setPreview] = useState<FixPreviewResponse>();
   const [applyResult, setApplyResult] = useState<FixApplyResponse>();
   const [reviewConfirmed, setReviewConfirmed] = useState(false);
@@ -110,6 +111,7 @@ export function App() {
       setSelectedScanId(scanId);
       setSelectedScan(response.scan);
       setSelectedFindingIds([]);
+      setRenameInputs({});
       setPreview(undefined);
       setApplyResult(undefined);
       setReviewConfirmed(false);
@@ -141,6 +143,7 @@ export function App() {
           setSelectedScanId(undefined);
           setSelectedScan(undefined);
           setSelectedFindingIds([]);
+          setRenameInputs({});
           setPreview(undefined);
           setApplyResult(undefined);
           setReviewConfirmed(false);
@@ -222,11 +225,35 @@ export function App() {
     setMutationStatus('running');
 
     try {
+      const inputs =
+        selectedScan?.findings.flatMap((finding) => {
+          if (finding.kind !== 'duplicate_name') {
+            return [];
+          }
+
+          return finding.objectIds.flatMap((entityId) => {
+            const value = renameInputs[entityId]?.trim();
+
+            if (!value || !selectedFindingIds.includes(finding.id)) {
+              return [];
+            }
+
+            return [
+              {
+                field: 'name' as const,
+                findingId: finding.id,
+                targetId: entityId,
+                value,
+              },
+            ];
+          });
+        }) ?? [];
       const nextPreview = await fetchJson<FixPreviewResponse>(
         '/api/fixes/preview',
         {
           body: JSON.stringify({
             findingIds: selectedFindingIds,
+            ...(inputs.length > 0 ? {inputs} : {}),
             scanId: selectedScanId,
           }),
           method: 'POST',
@@ -306,8 +333,8 @@ export function App() {
             <p className="font-semibold text-ink-strong">Safety contract</p>
             <p className="mt-2">
               Findings stay read-only until you explicitly select them, review
-              the exact edits, and confirm the preview token in a separate
-              dry-run step.
+              the exact Home Assistant commands, and confirm the preview token
+              in a separate dry-run step.
             </p>
           </div>
         </div>
@@ -427,7 +454,7 @@ export function App() {
               <h2 className="font-serif text-3xl">Finding selection</h2>
               <p className="mt-2 text-sm leading-6 text-ink-soft sm:text-base">
                 Select the exact findings you want to turn into a reviewed
-                dry-run plan.
+                dry-run command plan.
               </p>
             </div>
             <div className="flex flex-wrap gap-2">
@@ -490,7 +517,57 @@ export function App() {
                       }}
                       type="checkbox"
                     />
-                    <FindingCard finding={finding} />
+                    <FindingCard
+                      finding={finding}
+                      supplementalContent={
+                        selected && finding.kind === 'duplicate_name' ? (
+                          <div className="mt-4 grid gap-3">
+                            {finding.objectIds.map((entityId) => {
+                              const entity =
+                                selectedScan?.inventory.entities.find(
+                                  (candidate) =>
+                                    candidate.entityId === entityId,
+                                );
+                              const recommendation = entity
+                                ? `${entity.displayName} (${entity.entityId})`
+                                : '';
+
+                              return (
+                                <label
+                                  className="block rounded-[1rem] border border-black/8 bg-white/76 p-3"
+                                  key={entityId}
+                                >
+                                  <span className="text-xs font-semibold tracking-[0.16em] text-ink-soft uppercase">
+                                    Entity registry name
+                                  </span>
+                                  <p className="mt-1 text-sm font-semibold text-ink-strong">
+                                    {entityId}
+                                  </p>
+                                  <input
+                                    className="mt-3 w-full rounded-full border border-black/10 bg-white px-4 py-2 text-sm text-ink-strong outline-none transition focus:border-accent/40"
+                                    onChange={(event) => {
+                                      const nextValue = event.target.value;
+                                      setRenameInputs((current) => ({
+                                        ...current,
+                                        [entityId]: nextValue,
+                                      }));
+                                    }}
+                                    placeholder={recommendation}
+                                    type="text"
+                                    value={renameInputs[entityId] ?? ''}
+                                  />
+                                  <p className="mt-2 text-xs leading-5 text-ink-soft">
+                                    This value becomes the literal{' '}
+                                    <code>config/entity_registry/update</code>{' '}
+                                    <code>name</code> payload for this entity.
+                                  </p>
+                                </label>
+                              );
+                            })}
+                          </div>
+                        ) : undefined
+                      }
+                    />
                   </div>
                 </label>
               );
@@ -504,8 +581,9 @@ export function App() {
           <div>
             <h2 className="font-serif text-3xl">Reviewed preview</h2>
             <p className="mt-2 text-sm leading-6 text-ink-soft sm:text-base">
-              Review the exact edits below. The dry-run confirmation step is
-              blocked until you explicitly confirm this preview token.
+              Review the exact Home Assistant command payloads below. The
+              dry-run confirmation step is blocked until you explicitly confirm
+              this preview token.
             </p>
           </div>
           {preview && (
@@ -534,6 +612,11 @@ export function App() {
               <p className="mt-2">
                 Reviewed findings: {preview.selection.findingIds.join(', ')}
               </p>
+              {preview.advisories.length > 0 && (
+                <p className="mt-2">
+                  Advisory-only findings: {preview.advisories.length}
+                </p>
+              )}
               {activeQueue && (
                 <>
                   <p className="mt-2">
@@ -597,40 +680,69 @@ export function App() {
 
                   <section className="rounded-[1.1rem] border border-black/8 bg-ink-strong/4 p-4">
                     <p className="text-xs uppercase tracking-[0.16em] text-ink-soft">
-                      Edits
+                      Required inputs
                     </p>
                     <div className="mt-3 space-y-3">
-                      {action.edits.map((edit) => (
-                        <article
-                          className="rounded-[1rem] border border-black/8 bg-white/70 p-3 text-sm text-ink-soft"
-                          key={edit.id}
-                        >
-                          <p className="font-semibold text-ink-strong">
-                            {edit.summary}
-                          </p>
-                          <p className="mt-2">
-                            <span className="font-semibold text-ink-strong">
-                              Field:
-                            </span>{' '}
-                            {edit.fieldPath}
-                          </p>
-                          <p>
-                            <span className="font-semibold text-ink-strong">
-                              Before:
-                            </span>{' '}
-                            {edit.before ?? 'null'}
-                          </p>
-                          <p>
-                            <span className="font-semibold text-ink-strong">
-                              After:
-                            </span>{' '}
-                            {edit.after ?? 'null'}
-                          </p>
-                        </article>
-                      ))}
+                      {action.requiredInputs.length === 0 ? (
+                        <p className="rounded-[1rem] border border-black/8 bg-white/70 p-3 text-sm text-ink-soft">
+                          No operator-provided inputs required for this action.
+                        </p>
+                      ) : (
+                        action.requiredInputs.map((input) => (
+                          <article
+                            className="rounded-[1rem] border border-black/8 bg-white/70 p-3 text-sm text-ink-soft"
+                            key={input.id}
+                          >
+                            <p className="font-semibold text-ink-strong">
+                              {input.summary}
+                            </p>
+                            <p className="mt-2">
+                              <span className="font-semibold text-ink-strong">
+                                Field:
+                              </span>{' '}
+                              {input.field}
+                            </p>
+                            <p>
+                              <span className="font-semibold text-ink-strong">
+                                Current:
+                              </span>{' '}
+                              {input.currentValue ?? 'null'}
+                            </p>
+                            <p>
+                              <span className="font-semibold text-ink-strong">
+                                Recommended:
+                              </span>{' '}
+                              {input.recommendedValue ?? 'None'}
+                            </p>
+                            <p>
+                              <span className="font-semibold text-ink-strong">
+                                Provided:
+                              </span>{' '}
+                              {input.providedValue ?? 'Missing'}
+                            </p>
+                          </article>
+                        ))
+                      )}
                     </div>
                   </section>
                 </div>
+
+                <section className="mt-4 rounded-[1.1rem] border border-black/8 bg-ink-strong p-4 text-white">
+                  <p className="text-xs uppercase tracking-[0.16em] text-white/60">
+                    Literal commands
+                  </p>
+                  {action.commands.map((command) => (
+                    <article className="mt-3" key={command.id}>
+                      <p className="text-sm font-semibold">{command.summary}</p>
+                      <p className="mt-1 text-xs uppercase tracking-[0.16em] text-white/50">
+                        {command.transport}
+                      </p>
+                      <pre className="mt-2 overflow-x-auto rounded-[1rem] border border-white/10 bg-white/6 p-4 text-xs leading-6 text-white/80">
+                        {JSON.stringify(command.payload, null, 2)}
+                      </pre>
+                    </article>
+                  ))}
+                </section>
 
                 <section className="mt-4 rounded-[1.1rem] border border-black/8 bg-ink-strong p-4 text-white">
                   <p className="text-xs uppercase tracking-[0.16em] text-white/60">
@@ -659,6 +771,69 @@ export function App() {
               </article>
             ))}
 
+            {preview.advisories.map((advisory) => (
+              <article
+                className="rounded-[1.35rem] border border-black/8 bg-white/78 p-5"
+                key={advisory.id}
+              >
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div>
+                    <h3 className="font-serif text-2xl">{advisory.title}</h3>
+                    <p className="mt-2 text-sm leading-6 text-ink-soft">
+                      {advisory.summary}
+                    </p>
+                  </div>
+                  <span className="inline-flex rounded-full border border-black/10 px-3 py-1.5 text-[0.72rem] font-semibold tracking-[0.16em] text-ink-soft uppercase">
+                    advisory only
+                  </span>
+                </div>
+
+                <p className="mt-4 text-sm leading-6 text-ink-soft">
+                  {advisory.rationale}
+                </p>
+
+                <section className="mt-4 rounded-[1.1rem] border border-black/8 bg-ink-strong/4 p-4">
+                  <p className="text-xs uppercase tracking-[0.16em] text-ink-soft">
+                    Targets
+                  </p>
+                  <ul className="mt-3 space-y-2 text-sm text-ink-soft">
+                    {advisory.targets.map((target) => (
+                      <li key={target.id}>
+                        <span className="font-semibold text-ink-strong">
+                          {target.label}
+                        </span>{' '}
+                        <span className="uppercase tracking-[0.16em] text-[0.72rem]">
+                          {target.kind}
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                </section>
+
+                <section className="mt-4 rounded-[1.1rem] border border-accent/15 bg-accent/8 p-4">
+                  <p className="text-xs uppercase tracking-[0.16em] text-ink-soft">
+                    Warnings
+                  </p>
+                  <ul className="mt-3 space-y-2 text-sm leading-6 text-ink-soft">
+                    {advisory.warnings.map((warning) => (
+                      <li key={warning}>{warning}</li>
+                    ))}
+                  </ul>
+                </section>
+
+                <section className="mt-4 rounded-[1.1rem] border border-black/8 bg-ink-strong/4 p-4">
+                  <p className="text-xs uppercase tracking-[0.16em] text-ink-soft">
+                    Manual steps
+                  </p>
+                  <ul className="mt-3 space-y-2 text-sm leading-6 text-ink-soft">
+                    {advisory.steps.map((step) => (
+                      <li key={step}>{step}</li>
+                    ))}
+                  </ul>
+                </section>
+              </article>
+            ))}
+
             <div className="rounded-[1.3rem] border border-black/8 bg-ink-strong/4 p-4">
               <label className="flex items-start gap-3 text-sm text-ink-soft">
                 <input
@@ -670,8 +845,9 @@ export function App() {
                   type="checkbox"
                 />
                 <span>
-                  I reviewed these exact edits and understand that the dry-run
-                  apply step will only accept the preview token shown above.
+                  I reviewed these exact Home Assistant commands and understand
+                  that the dry-run apply step will only accept the preview token
+                  shown above.
                 </span>
               </label>
 
@@ -761,7 +937,13 @@ export function App() {
   );
 }
 
-function FindingCard({finding}: {finding: Finding}) {
+function FindingCard({
+  finding,
+  supplementalContent,
+}: {
+  finding: Finding;
+  supplementalContent?: ReactNode;
+}) {
   return (
     <div className="min-w-0 flex-1">
       <div className="flex flex-wrap items-center gap-3">
@@ -776,6 +958,7 @@ function FindingCard({finding}: {finding: Finding}) {
       <p className="mt-3 text-xs uppercase tracking-[0.16em] text-ink-soft">
         {finding.objectIds.join(', ')}
       </p>
+      {supplementalContent}
     </div>
   );
 }

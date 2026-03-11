@@ -17,6 +17,7 @@ import type {
   ConnectionProfile,
   ConnectionResult,
   Finding,
+  FindingAdvisory,
   FindingKind,
   FindingSeverity,
   FixAction,
@@ -37,7 +38,11 @@ import type {
   ScanRun,
 } from '@ha-repair/contracts';
 import {collectMockInventory, testConnection} from '@ha-repair/ha-client';
-import {createFixActions, runScan} from '@ha-repair/scan-engine';
+import {
+  createFindingAdvisories,
+  createFixActions,
+  runScan,
+} from '@ha-repair/scan-engine';
 
 const defaultDatabasePath = './data/ha-repair.sqlite';
 const currentSchemaVersion = 2;
@@ -542,6 +547,7 @@ function createQueueEntryId(): string {
 function createScanExportBundle(scan: ScanDetail): ScanExportBundle {
   return {
     actions: createFixActions(scan.inventory, scan.findings),
+    advisories: createFindingAdvisories(scan.inventory, scan.findings),
     diffSummary: scan.diffSummary,
     findings: scan.findings,
     generatedAt: new Date().toISOString(),
@@ -560,6 +566,12 @@ function formatLineItemList(
   emptyLabel = 'None',
 ): string {
   return `- ${label}: ${values.length > 0 ? values.join(', ') : emptyLabel}`;
+}
+
+function formatCommandPayload(
+  payload: FixAction['commands'][number]['payload'],
+): string {
+  return JSON.stringify(payload, null, 2);
 }
 
 export function renderScanExportMarkdown(bundle: ScanExportBundle): string {
@@ -613,46 +625,109 @@ export function renderScanExportMarkdown(bundle: ScanExportBundle): string {
 
   if (bundle.actions.length === 0) {
     lines.push('No fix actions generated for this scan.');
-    return lines.join('\n');
-  }
-
-  for (const action of bundle.actions) {
-    lines.push(
-      '',
-      `### ${action.title}`,
-      `- Action ID: ${action.id}`,
-      `- Finding ID: ${action.findingId}`,
-      `- Kind: ${action.kind}`,
-      `- Risk: ${action.risk}`,
-      `- Intent: ${action.intent}`,
-      `- Rationale: ${action.rationale}`,
-      `- Requires confirmation: ${action.requiresConfirmation ? 'yes' : 'no'}`,
-      formatLineItemList(
-        'Targets',
-        action.targets.map((target) => `${target.label} [${target.kind}]`),
-      ),
-      formatLineItemList(
-        'Edits',
-        action.edits.map(
-          (edit) =>
-            `${edit.summary} (${edit.fieldPath}: ${edit.before ?? 'null'} -> ${edit.after ?? 'null'})`,
-        ),
-      ),
-      formatLineItemList('Warnings', action.warnings),
-      formatLineItemList('Steps', action.steps),
-    );
-
-    for (const artifact of action.artifacts) {
+  } else {
+    for (const action of bundle.actions) {
       lines.push(
-        `- Artifact: ${artifact.label} (${artifact.kind})`,
-        '```diff',
-        artifact.content,
-        '```',
+        '',
+        `### ${action.title}`,
+        `- Action ID: ${action.id}`,
+        `- Finding ID: ${action.findingId}`,
+        `- Kind: ${action.kind}`,
+        `- Risk: ${action.risk}`,
+        `- Intent: ${action.intent}`,
+        `- Rationale: ${action.rationale}`,
+        `- Requires confirmation: ${action.requiresConfirmation ? 'yes' : 'no'}`,
+        formatLineItemList(
+          'Targets',
+          action.targets.map((target) => `${target.label} [${target.kind}]`),
+        ),
+        formatLineItemList('Warnings', action.warnings),
+        formatLineItemList('Steps', action.steps),
       );
+
+      if (action.requiredInputs.length === 0) {
+        lines.push('- Required inputs: None');
+      } else {
+        lines.push(
+          formatLineItemList(
+            'Required inputs',
+            action.requiredInputs.map(
+              (input) =>
+                `${input.summary} (field: ${input.field}, current: ${input.currentValue ?? 'null'}, recommended: ${input.recommendedValue ?? 'None'}, provided: ${input.providedValue ?? 'Missing'})`,
+            ),
+          ),
+        );
+      }
+
+      if (action.commands.length === 0) {
+        lines.push(
+          '- Commands: No literal Home Assistant payloads generated yet.',
+        );
+      } else {
+        for (const command of action.commands) {
+          lines.push(
+            `- Command: ${command.summary} [${command.transport}]`,
+            '```json',
+            formatCommandPayload(command.payload),
+            '```',
+          );
+        }
+      }
+
+      for (const artifact of action.artifacts) {
+        lines.push(
+          `- Artifact: ${artifact.label} (${artifact.kind})`,
+          '```diff',
+          artifact.content,
+          '```',
+        );
+      }
     }
   }
 
+  lines.push('', '## Advisory Findings');
+
+  if (bundle.advisories.length === 0) {
+    lines.push('No advisory-only findings recorded for this scan.');
+    return lines.join('\n');
+  }
+
+  for (const advisory of bundle.advisories) {
+    lines.push(
+      '',
+      `### ${advisory.title}`,
+      `- Finding ID: ${advisory.findingId}`,
+      `- Summary: ${advisory.summary}`,
+      `- Rationale: ${advisory.rationale}`,
+      formatLineItemList(
+        'Targets',
+        advisory.targets.map((target) => `${target.label} [${target.kind}]`),
+      ),
+      formatLineItemList('Warnings', advisory.warnings),
+      formatLineItemList('Steps', advisory.steps),
+    );
+  }
+
   return lines.join('\n');
+}
+
+function getIncompleteRequiredInputs(actions: FixAction[]) {
+  return actions.flatMap((action) =>
+    action.requiredInputs
+      .filter((input) => !input.providedValue)
+      .map((input) => ({action, input})),
+  );
+}
+
+function formatMissingInputMessage(
+  missingInputs: ReturnType<typeof getIncompleteRequiredInputs>,
+): string {
+  return missingInputs
+    .map(
+      ({action, input}) =>
+        `${action.id} requires ${input.field} for ${input.targetId}`,
+    )
+    .join(', ');
 }
 
 function hasExactActionSelection(
@@ -959,7 +1034,26 @@ export async function createRepairService(
       request.findingIds,
     );
     const scan = await requireScanDetail(request.scanId);
-    const actions = createFixActions(scan.inventory, findings);
+    const actions = createFixActions(scan.inventory, findings, request.inputs);
+    const advisories = createFindingAdvisories(scan.inventory, findings);
+    const missingInputs = getIncompleteRequiredInputs(actions);
+
+    if (missingInputs.length > 0) {
+      throw createServiceError(
+        'fix_input_required',
+        400,
+        `Provide literal Home Assistant input values before preview: ${formatMissingInputMessage(missingInputs)}.`,
+      );
+    }
+
+    if (actions.length === 0) {
+      throw createServiceError(
+        'no_previewable_actions',
+        400,
+        'The selected findings do not map to literal previewable Home Assistant commands.',
+      );
+    }
+
     const selection = createFixSelection(actions);
     const createdAt = new Date().toISOString();
     const previewToken = createPreviewToken();
@@ -982,6 +1076,7 @@ export async function createRepairService(
 
     return {
       actions,
+      advisories,
       generatedAt: createdAt,
       previewToken,
       queue,

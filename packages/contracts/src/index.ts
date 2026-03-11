@@ -58,10 +58,12 @@ export type CapabilitySet = {
 };
 
 export type InventoryEntity = {
-  deviceId?: string;
+  deviceId?: string | null;
+  disabledBy?: string | null;
+  displayName: string;
   entityId: string;
-  friendlyName: string;
   isStale: boolean;
+  name?: string | null;
 };
 
 export type InventoryDevice = {
@@ -134,10 +136,7 @@ export type ScanHistoryResponse = {
   scans: ScanHistoryEntry[];
 };
 
-export type FixActionKind =
-  | 'rename_duplicate_name'
-  | 'repair_orphaned_entity_device'
-  | 'review_stale_entity';
+export type FixActionKind = 'rename_duplicate_name' | 'review_stale_entity';
 
 export type FixRisk = 'low' | 'medium' | 'high';
 
@@ -149,11 +148,25 @@ export type FixTarget = {
   label: string;
 };
 
-export type FixEdit = {
-  after: string | null;
-  before: string | null;
-  fieldPath: string;
+export type FixCommand = {
   id: string;
+  summary: string;
+  targetId: string;
+  transport: 'websocket';
+  payload: {
+    disabled_by?: string | null;
+    entity_id: string;
+    name?: string;
+    type: 'config/entity_registry/update';
+  };
+};
+
+export type FixRequiredInput = {
+  currentValue: string | null;
+  field: 'name';
+  id: string;
+  providedValue?: string;
+  recommendedValue?: string;
   summary: string;
   targetId: string;
 };
@@ -169,12 +182,13 @@ export type FixArtifact = {
 
 export type FixAction = {
   artifacts: FixArtifact[];
-  edits: FixEdit[];
+  commands: FixCommand[];
   findingId: string;
   id: string;
   intent: string;
   kind: FixActionKind;
   rationale: string;
+  requiredInputs: FixRequiredInput[];
   requiresConfirmation: boolean;
   risk: FixRisk;
   steps: string[];
@@ -183,8 +197,27 @@ export type FixAction = {
   warnings: string[];
 };
 
+export type FixPreviewInput = {
+  field: 'name';
+  findingId: string;
+  targetId: string;
+  value: string;
+};
+
+export type FindingAdvisory = {
+  findingId: string;
+  id: string;
+  rationale: string;
+  steps: string[];
+  summary: string;
+  targets: FixTarget[];
+  title: string;
+  warnings: string[];
+};
+
 export type FixPreviewRequest = {
   findingIds?: string[];
+  inputs?: FixPreviewInput[];
   scanId: string;
 };
 
@@ -204,6 +237,7 @@ export type FixSelection = {
 
 export type FixPreviewResponse = {
   actions: FixAction[];
+  advisories: FindingAdvisory[];
   generatedAt: string;
   previewToken: string;
   queue: FixQueueEntry;
@@ -230,6 +264,7 @@ export type FixApplyResponse = {
 
 export type ScanExportBundle = {
   actions: FixAction[];
+  advisories: FindingAdvisory[];
   diffSummary: ScanDiffSummary;
   findings: Finding[];
   generatedAt: string;

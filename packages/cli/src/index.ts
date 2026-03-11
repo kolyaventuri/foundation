@@ -1,6 +1,10 @@
 import process from 'node:process';
 import {Command, Option} from 'commander';
-import type {ConnectionProfile} from '@ha-repair/contracts';
+import type {
+  ConnectionProfile,
+  Finding,
+  FixPreviewInput,
+} from '@ha-repair/contracts';
 import {listProviderDescriptors} from '@ha-repair/llm';
 import {createFrameworkSummary} from '@ha-repair/scan-engine';
 import {
@@ -66,6 +70,62 @@ function buildInlineProfile(options: {
     token: options.token,
     ...(options.configPath ? {configPath: options.configPath} : {}),
   };
+}
+
+function collectRepeatedValue(
+  value: string,
+  previous: string[] = [],
+): string[] {
+  return [...previous, value];
+}
+
+function parseEntityNameInput(value: string): {
+  targetId: string;
+  value: string;
+} {
+  const separatorIndex = value.indexOf('=');
+
+  if (separatorIndex <= 0 || separatorIndex === value.length - 1) {
+    throw new RepairServiceError(
+      'invalid_preview_input',
+      400,
+      'Pass --name as entity_id=value.',
+    );
+  }
+
+  return {
+    targetId: value.slice(0, separatorIndex).trim(),
+    value: value.slice(separatorIndex + 1).trim(),
+  };
+}
+
+function buildPreviewInputs(
+  values: string[],
+  findings: Finding[],
+): FixPreviewInput[] {
+  return values.map((value) => {
+    const parsed = parseEntityNameInput(value);
+    const finding = findings.find(
+      (candidate) =>
+        candidate.kind === 'duplicate_name' &&
+        candidate.objectIds.includes(parsed.targetId),
+    );
+
+    if (!finding) {
+      throw new RepairServiceError(
+        'invalid_preview_input',
+        400,
+        `No selected duplicate-name finding includes ${parsed.targetId}.`,
+      );
+    }
+
+    return {
+      field: 'name',
+      findingId: finding.id,
+      targetId: parsed.targetId,
+      value: parsed.value,
+    };
+  });
 }
 
 export function buildProgram() {
@@ -318,29 +378,51 @@ export function buildProgram() {
 
   program
     .command('preview [findingIds...]')
-    .description('Preview exact dry-run edits for selected findings')
+    .description(
+      'Preview literal dry-run Home Assistant commands for selected findings',
+    )
     .requiredOption('--scan <scanId>', 'Scan id to preview')
+    .option(
+      '--name <entityId=value>',
+      'Explicit entity registry name for a duplicate-name target',
+      collectRepeatedValue,
+      [],
+    )
     .action(
       async (
         findingIds: string[],
         options: {
+          name: string[];
           scan: string;
         },
         command: Command,
       ) => {
         try {
-          const preview = await withService(command, async (service) =>
-            service.previewFixes(
+          const preview = await withService(command, async (service) => {
+            const selectedFindings = await service.getScanFindings(
+              options.scan,
+            );
+            const resolvedFindings =
+              findingIds.length === 0
+                ? selectedFindings
+                : selectedFindings.filter((finding) =>
+                    findingIds.includes(finding.id),
+                  );
+            const inputs = buildPreviewInputs(options.name, resolvedFindings);
+
+            return service.previewFixes(
               findingIds.length > 0
                 ? {
                     findingIds,
+                    ...(inputs.length > 0 ? {inputs} : {}),
                     scanId: options.scan,
                   }
                 : {
+                    ...(inputs.length > 0 ? {inputs} : {}),
                     scanId: options.scan,
                   },
-            ),
-          );
+            );
+          });
 
           printJson(preview);
         } catch (error) {
