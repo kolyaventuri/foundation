@@ -24,6 +24,18 @@ Initial workspace scaffold for the Home Assistant repair console described in [P
 - `pnpm test`
 - `pnpm typecheck`
 
+## Safety Contract
+
+This project is intentionally cautious about writes to Home Assistant.
+
+- scans and findings are read-only by default
+- nothing is fixed automatically
+- users must explicitly choose which fixes they want to apply
+- every fix must explain what it intends to change, which objects it affects, and why
+- every fix must be reviewable before apply, including raw YAML or config diffs when YAML/config files are involved
+- apply must be a separate confirmation step from preview
+- the CLI follows the same safety model as the web UI
+
 ## Current state
 
 Phase B is now in place with persisted local workflows:

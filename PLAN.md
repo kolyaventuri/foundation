@@ -10,9 +10,18 @@ The application should treat deterministic checks as the source of truth, persis
 
 ## Guiding principles
 - **Methodical first**: every finding needs reproducible evidence and deterministic logic.
-- **Trust before writes**: prefer previews and export plans before live mutation.
+- **Trust before writes**: fixes stay read-only until the user explicitly selects and confirms them after review.
 - **Capability-aware**: older Home Assistant installs must degrade gracefully with explicit skipped checks.
 - **Local-first**: no SaaS dependency for core functionality.
+
+## Safety contract
+- Findings are read-only and advisory by default across both the web UI and the CLI.
+- Scans, discovery, and history views must never mutate Home Assistant state.
+- Users must be able to pick individual fixes explicitly; no implicit or background apply flow is allowed.
+- Every proposed fix must explain its intent, affected targets, and risk level before any write can occur.
+- Every proposed fix must be reviewable as an exact edit plan before apply, including raw YAML/config diffs when YAML or config files are involved.
+- Apply must remain a separate confirmation step from preview, and the final applied payload must match the reviewed preview exactly.
+- Prefer export, patch, or dry-run workflows over live mutation whenever possible.
 
 ## v1 Scope
 - Inventory and hygiene coverage across entities, devices, areas, labels/floors where supported.
@@ -75,7 +84,7 @@ Deliver the smallest useful end-to-end flow with deterministic value.
 ### Phase B — Trust, previews, and persistence
 1. SQLite persistence layer and migrations.
 2. Fix queue state model and preview payloads.
-3. `--dry-run` apply flow with explainable evidence.
+3. `--dry-run` apply flow with explainable evidence and no live mutation.
 4. Export reports in markdown/json for auditability.
 5. History diff model: resolved/regressed/unchanged findings.
 
@@ -88,7 +97,7 @@ Deliver the smallest useful end-to-end flow with deterministic value.
 ## Implementation notes
 - Workspace shape stays as `apps/web`, `apps/api`, and shared packages (`ha-client`, `scan-engine`, `contracts`, `llm`, `cli`).
 - Discovery should use Home Assistant WebSocket + REST once Phase A API contracts settle.
-- Live writes remain capability-gated and conservative in v1.
+- Live writes remain capability-gated, conservative, and blocked behind explicit review + confirmation in v1.
 
 ## Validation strategy
 - Run scans against mocked Home Assistant inventory fixtures.
