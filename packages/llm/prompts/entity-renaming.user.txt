@@ -1,0 +1,4 @@
+Suggest reviewed rename candidates for the provided Home Assistant items.
+
+Context JSON:
+{{context_json}}

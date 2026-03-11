@@ -103,7 +103,7 @@ export async function createServer(options: RepairServiceOptions = {}) {
         result: await repairService.testInlineProfile(
           buildConnectionProfile(request.body),
           {
-            mode: request.body?.mode,
+            ...(request.body?.mode ? {mode: request.body.mode} : {}),
           },
         ),
       };
@@ -119,7 +119,7 @@ export async function createServer(options: RepairServiceOptions = {}) {
         result: await repairService.testInlineProfile(
           buildConnectionProfile(request.body),
           {
-            mode: request.body?.mode,
+            ...(request.body?.mode ? {mode: request.body.mode} : {}),
           },
         ),
       };
@@ -189,7 +189,7 @@ export async function createServer(options: RepairServiceOptions = {}) {
     try {
       const response: ConnectionTestResponse = {
         result: await repairService.testSavedProfile(request.params.name, {
-          mode: request.body?.mode,
+          ...(request.body?.mode ? {mode: request.body.mode} : {}),
         }),
       };
 

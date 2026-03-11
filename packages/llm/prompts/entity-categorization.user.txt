@@ -1,0 +1,4 @@
+Categorize the provided Home Assistant items.
+
+Context JSON:
+{{context_json}}

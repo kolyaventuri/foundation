@@ -1,0 +1,4 @@
+Summarize each Home Assistant finding in one short operator-facing sentence.
+
+Context JSON:
+{{context_json}}
