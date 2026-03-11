@@ -1,11 +1,9 @@
 import {describe, expect, it} from 'vitest';
-import type {InventoryGraph} from '@ha-repair/contracts';
 import {
-  createFindingAdvisories,
-  createFixActions,
   createFrameworkSummary,
-  runScan,
-} from './index';
+  type InventoryGraph,
+} from '@ha-repair/contracts';
+import {createFindingAdvisories, createFixActions, runScan} from './index';
 
 const baselineInventory: InventoryGraph = {
   areas: [

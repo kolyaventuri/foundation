@@ -1,12 +1,12 @@
 import process from 'node:process';
 import {Command, Option} from 'commander';
-import type {
-  ConnectionProfile,
-  Finding,
-  FixPreviewInput,
+import {
+  createFrameworkSummary,
+  type ConnectionProfile,
+  type Finding,
+  type FixPreviewInput,
 } from '@ha-repair/contracts';
 import {listProviderDescriptors} from '@ha-repair/llm';
-import {createFrameworkSummary} from '@ha-repair/scan-engine';
 import {
   createRepairService,
   renderScanExportMarkdown,

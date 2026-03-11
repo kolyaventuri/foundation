@@ -81,7 +81,7 @@ describe('llm', () => {
           error: null,
           id: 'resp_123',
           incomplete_details: null,
-          model: 'gpt-4.1-mini',
+          model: 'gpt-5-nano',
           object: 'response',
           output: [
             {
@@ -155,7 +155,7 @@ describe('llm', () => {
           summary: 'Kitchen Light is duplicated across two entities.',
         },
       ],
-      model: 'gpt-4.1-mini',
+      model: 'gpt-5-nano',
       provider: 'openai',
       status: 'completed',
     });
@@ -171,7 +171,7 @@ describe('llm', () => {
       'Summarize each Home Assistant finding',
     );
     expect(requestBody?.input).toContain('duplicate_name:Kitchen Light');
-    expect(requestBody?.model).toBe('gpt-4.1-mini');
+    expect(requestBody?.model).toBe('gpt-5-nano');
     expect(requestBody?.text?.format).toMatchObject({
       name: 'finding_summaries',
       type: 'json_schema',

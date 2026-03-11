@@ -527,6 +527,49 @@ export type FrameworkSummary = {
   title: string;
 };
 
+export function createFrameworkSummary(): FrameworkSummary {
+  return {
+    priorities: [
+      'Run real read-only Home Assistant discovery over authenticated websocket + REST.',
+      'Expand deterministic rule packs for area coverage, assistant bloat, and invalid automation targets.',
+      'Capture optional backup checkpoints before any future live-apply milestone.',
+    ],
+    surfaces: [
+      {
+        id: 'api',
+        name: 'API shell',
+        state: 'ready',
+        summary:
+          'Fastify exposes persisted profile, scan, history, checkpoint, queue-backed preview, and dry-run apply endpoints.',
+      },
+      {
+        id: 'web',
+        name: 'Guided UI shell',
+        state: 'ready',
+        summary:
+          'React + Vite render queue-aware scan review flows with pass metadata, scan notes, and explicit preview confirmation.',
+      },
+      {
+        id: 'cli',
+        name: 'CLI path',
+        state: 'ready',
+        summary:
+          'The CLI now manages saved profiles plus local or live scan, checkpoint, findings, preview, apply, and export flows.',
+      },
+      {
+        id: 'rules',
+        name: 'Repair engine',
+        state: 'ready',
+        summary:
+          'Deterministic findings persist with diff summaries, pass timing, checkpoint state, and audit-ready exports.',
+      },
+    ],
+    tagline:
+      'A local-first framework for deep Home Assistant inventory repair, cleanup, and guided improvement.',
+    title: 'Home Assistant Repair Console',
+  };
+}
+
 export type ProviderDescriptor = {
   description: string;
   id: ProviderKind;
