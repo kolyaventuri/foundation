@@ -295,11 +295,38 @@ describe('api server', () => {
       expect(previewResponse.statusCode).toBe(200);
       const previewBody = parseJson<FixPreviewResponse>(previewResponse.body);
       expect(previewBody.actions).toHaveLength(2);
+      expect(previewBody.previewToken).toEqual(expect.any(String));
+      expect(previewBody.selection.actionIds).toHaveLength(2);
+      const previewAction = previewBody.actions[0];
+      expect(previewAction).toBeDefined();
+      if (!previewAction) {
+        throw new Error('Expected preview action');
+      }
+
+      expect(previewAction.requiresConfirmation).toBe(true);
+
+      const previewArtifact = previewAction.artifacts[0];
+      expect(previewArtifact).toBeDefined();
+      if (!previewArtifact) {
+        throw new Error('Expected preview artifact');
+      }
+
+      expect(previewArtifact.content).toContain('@@ entity/');
+
+      const previewEdit = previewAction.edits[0];
+      expect(previewEdit).toBeDefined();
+      if (!previewEdit) {
+        throw new Error('Expected preview edit');
+      }
+
+      expect(previewEdit.fieldPath.length).toBeGreaterThan(0);
 
       const applyResponse = await secondServer.inject({
         method: 'POST',
         payload: {
+          actionIds: previewBody.selection.actionIds,
           dryRun: true,
+          previewToken: previewBody.previewToken,
           scanId: secondScan.scan.id,
         },
         url: '/api/fixes/apply',
@@ -310,18 +337,23 @@ describe('api server', () => {
       expect(applyBody).toMatchObject({
         appliedCount: 0,
         mode: 'dry_run',
+        previewToken: previewBody.previewToken,
         scanId: secondScan.scan.id,
+        selection: previewBody.selection,
       });
 
       const rejectedApply = await secondServer.inject({
         method: 'POST',
         payload: {
+          actionIds: previewBody.selection.actionIds,
+          dryRun: true,
+          previewToken: 'invalid-token',
           scanId: secondScan.scan.id,
         },
         url: '/api/fixes/apply',
       });
 
-      expect(rejectedApply.statusCode).toBe(400);
+      expect(rejectedApply.statusCode).toBe(409);
     } finally {
       await secondServer.close();
     }

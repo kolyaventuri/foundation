@@ -1,6 +1,6 @@
 import process from 'node:process';
 import {Command, Option} from 'commander';
-import type {ConnectionProfile, FixAction} from '@ha-repair/contracts';
+import type {ConnectionProfile} from '@ha-repair/contracts';
 import {listProviderDescriptors} from '@ha-repair/llm';
 import {createFrameworkSummary} from '@ha-repair/scan-engine';
 import {
@@ -65,26 +65,6 @@ function buildInlineProfile(options: {
     token: options.token,
     ...(options.configPath ? {configPath: options.configPath} : {}),
   };
-}
-
-function resolveSelectedFindingIds(
-  actions: FixAction[],
-  fixIds: string[],
-): string[] {
-  const requestedIds = new Set(fixIds);
-  const selected = actions.filter((action) => requestedIds.has(action.id));
-
-  if (selected.length !== requestedIds.size) {
-    const foundIds = new Set(selected.map((action) => action.id));
-    const missing = [...requestedIds].filter((fixId) => !foundIds.has(fixId));
-    throw new RepairServiceError(
-      'finding_not_found',
-      400,
-      `Unknown fix ids: ${missing.join(', ')}`,
-    );
-  }
-
-  return selected.map((action) => action.findingId);
 }
 
 export function buildProgram() {
@@ -336,15 +316,53 @@ export function buildProgram() {
     );
 
   program
-    .command('apply [fixIds...]')
-    .description('Return a deterministic dry-run fix plan for a scan')
+    .command('preview [findingIds...]')
+    .description('Preview exact dry-run edits for selected findings')
+    .requiredOption('--scan <scanId>', 'Scan id to preview')
+    .action(
+      async (
+        findingIds: string[],
+        options: {
+          scan: string;
+        },
+        command: Command,
+      ) => {
+        try {
+          const preview = await withService(command, async (service) =>
+            service.previewFixes(
+              findingIds.length > 0
+                ? {
+                    findingIds,
+                    scanId: options.scan,
+                  }
+                : {
+                    scanId: options.scan,
+                  },
+            ),
+          );
+
+          printJson(preview);
+        } catch (error) {
+          reportError(error);
+        }
+      },
+    );
+
+  program
+    .command('apply <actionIds...>')
+    .description('Run a reviewed dry-run apply for explicitly selected actions')
     .requiredOption('--scan <scanId>', 'Scan id to preview/apply')
+    .requiredOption(
+      '--preview-token <token>',
+      'Preview token returned by the reviewed preview step',
+    )
     .option('--dry-run', 'Required for Phase B')
     .action(
       async (
-        fixIds: string[],
+        actionIds: string[],
         options: {
           dryRun?: boolean;
+          previewToken: string;
           scan: string;
         },
         command: Command,
@@ -358,27 +376,21 @@ export function buildProgram() {
             );
           }
 
+          if (actionIds.length === 0) {
+            throw new RepairServiceError(
+              'action_selection_required',
+              400,
+              'Select at least one reviewed action id before apply.',
+            );
+          }
+
           const response = await withService(command, async (service) => {
-            const preview = await service.previewFixes({
+            return service.applyFixes({
+              actionIds,
+              dryRun: true,
+              previewToken: options.previewToken,
               scanId: options.scan,
             });
-            const findingIds =
-              fixIds.length > 0
-                ? resolveSelectedFindingIds(preview.actions, fixIds)
-                : undefined;
-
-            return service.applyFixes(
-              findingIds
-                ? {
-                    dryRun: true,
-                    findingIds,
-                    scanId: options.scan,
-                  }
-                : {
-                    dryRun: true,
-                    scanId: options.scan,
-                  },
-            );
           });
 
           printJson(response);

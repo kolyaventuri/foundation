@@ -141,14 +141,46 @@ export type FixActionKind =
 
 export type FixRisk = 'low' | 'medium' | 'high';
 
+export type FixTargetKind = 'entity' | 'device' | 'entity_registry';
+
+export type FixTarget = {
+  id: string;
+  kind: FixTargetKind;
+  label: string;
+};
+
+export type FixEdit = {
+  after: string | null;
+  before: string | null;
+  fieldPath: string;
+  id: string;
+  summary: string;
+  targetId: string;
+};
+
+export type FixArtifactKind = 'text_diff' | 'yaml_diff';
+
+export type FixArtifact = {
+  content: string;
+  id: string;
+  kind: FixArtifactKind;
+  label: string;
+};
+
 export type FixAction = {
+  artifacts: FixArtifact[];
+  edits: FixEdit[];
   findingId: string;
   id: string;
+  intent: string;
   kind: FixActionKind;
   rationale: string;
+  requiresConfirmation: boolean;
   risk: FixRisk;
   steps: string[];
+  targets: FixTarget[];
   title: string;
+  warnings: string[];
 };
 
 export type FixPreviewRequest = {
@@ -156,20 +188,33 @@ export type FixPreviewRequest = {
   scanId: string;
 };
 
-export type FixPreviewResponse = {
-  actions: FixAction[];
-  scanId: string;
+export type FixSelection = {
+  actionIds: string[];
+  findingIds: string[];
 };
 
-export type FixApplyRequest = FixPreviewRequest & {
+export type FixPreviewResponse = {
+  actions: FixAction[];
+  generatedAt: string;
+  previewToken: string;
+  scanId: string;
+  selection: FixSelection;
+};
+
+export type FixApplyRequest = {
+  actionIds: string[];
   dryRun?: boolean;
+  previewToken: string;
+  scanId: string;
 };
 
 export type FixApplyResponse = {
   actions: FixAction[];
   appliedCount: number;
   mode: 'dry_run';
+  previewToken: string;
   scanId: string;
+  selection: FixSelection;
 };
 
 export type ScanExportBundle = {

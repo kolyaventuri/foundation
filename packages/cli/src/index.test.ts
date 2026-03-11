@@ -2,6 +2,7 @@ import {mkdtempSync, rmSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import process from 'node:process';
+import type {FixApplyResponse, FixPreviewResponse} from '@ha-repair/contracts';
 import {afterEach, describe, expect, it} from 'vitest';
 import {buildProgram} from './index';
 
@@ -61,7 +62,7 @@ afterEach(() => {
 });
 
 describe('cli', () => {
-  it('supports saved profiles, scans, dry-run apply, and json export', async () => {
+  it('supports saved profiles, reviewed previews, dry-run apply, and json export', async () => {
     const dbPath = createTempDatabasePath();
 
     const saveResult = await runCliCommand(
@@ -136,37 +137,77 @@ describe('cli', () => {
     const findings = JSON.parse(findingsResult.stdout) as Array<{id: string}>;
     expect(findings.length).toBeGreaterThan(0);
 
-    const applyAllResult = await runCliCommand(
-      ['apply', '--scan', scanSummary.scanId, '--dry-run'],
+    const previewResult = await runCliCommand(
+      ['preview', findings[0]!.id, '--scan', scanSummary.scanId],
       dbPath,
     );
-    expect(applyAllResult.exitCode).toBe(0);
-    const applyAll = JSON.parse(applyAllResult.stdout) as {
-      actions: Array<{id: string}>;
-      mode: string;
-      scanId: string;
-    };
-    expect(applyAll).toMatchObject({
-      mode: 'dry_run',
+    expect(previewResult.exitCode).toBe(0);
+    const preview = JSON.parse(previewResult.stdout) as FixPreviewResponse;
+    expect(preview).toMatchObject({
       scanId: scanSummary.scanId,
     });
-    expect(applyAll.actions.length).toBeGreaterThan(0);
+    expect(preview.previewToken).toEqual(expect.any(String));
+    expect(preview.actions).toHaveLength(1);
+    const previewAction = preview.actions[0];
+    expect(previewAction).toBeDefined();
+    if (!previewAction) {
+      throw new Error('Expected preview action');
+    }
+
+    expect(previewAction.requiresConfirmation).toBe(true);
+
+    const previewArtifact = previewAction.artifacts[0];
+    expect(previewArtifact).toBeDefined();
+    if (!previewArtifact) {
+      throw new Error('Expected preview artifact');
+    }
+
+    expect(previewArtifact.content).toContain('@@ entity/');
+
+    const previewEdit = previewAction.edits[0];
+    expect(previewEdit).toBeDefined();
+    if (!previewEdit) {
+      throw new Error('Expected preview edit');
+    }
+
+    expect(previewEdit.fieldPath.length).toBeGreaterThan(0);
 
     const applySelectedResult = await runCliCommand(
       [
         'apply',
-        applyAll.actions[0]!.id,
+        preview.selection.actionIds[0]!,
         '--scan',
         scanSummary.scanId,
+        '--preview-token',
+        preview.previewToken,
         '--dry-run',
       ],
       dbPath,
     );
     expect(applySelectedResult.exitCode).toBe(0);
-    const applySelected = JSON.parse(applySelectedResult.stdout) as {
-      actions: Array<{id: string}>;
-    };
+    const applySelected = JSON.parse(
+      applySelectedResult.stdout,
+    ) as FixApplyResponse;
     expect(applySelected.actions).toHaveLength(1);
+    expect(applySelected.mode).toBe('dry_run');
+    expect(applySelected.previewToken).toBe(preview.previewToken);
+
+    const rejectedApplyResult = await runCliCommand(
+      [
+        'apply',
+        preview.selection.actionIds[0]!,
+        '--scan',
+        scanSummary.scanId,
+        '--preview-token',
+        'bad-token',
+        '--dry-run',
+      ],
+      dbPath,
+    );
+    expect(rejectedApplyResult.exitCode).toBe(1);
+    expect(rejectedApplyResult.stderr).toContain(
+      'do not match the reviewed preview token',
+    );
 
     const exportResult = await runCliCommand(
       ['export', scanSummary.scanId, '--format', 'json'],

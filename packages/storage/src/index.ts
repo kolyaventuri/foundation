@@ -1,3 +1,4 @@
+import {createHash} from 'node:crypto';
 import {mkdirSync} from 'node:fs';
 import {dirname, resolve as resolvePath} from 'node:path';
 import process from 'node:process';
@@ -18,10 +19,12 @@ import type {
   Finding,
   FindingKind,
   FindingSeverity,
+  FixAction,
   FixApplyRequest,
   FixApplyResponse,
   FixPreviewRequest,
   FixPreviewResponse,
+  FixSelection,
   InventoryGraph,
   ProfileDeleteResponse,
   SavedConnectionProfile,
@@ -446,6 +449,38 @@ function buildDiffSummary(
   };
 }
 
+function createFixSelection(actions: FixAction[]): FixSelection {
+  const findingIds: string[] = [];
+  const seenFindingIds = new Set<string>();
+
+  for (const action of actions) {
+    if (!seenFindingIds.has(action.findingId)) {
+      seenFindingIds.add(action.findingId);
+      findingIds.push(action.findingId);
+    }
+  }
+
+  return {
+    actionIds: actions.map((action) => action.id),
+    findingIds,
+  };
+}
+
+function createPreviewToken(scanId: string, actions: FixAction[]): string {
+  const canonicalActions = [...actions].sort((left, right) =>
+    left.id.localeCompare(right.id),
+  );
+
+  return createHash('sha256')
+    .update(
+      JSON.stringify({
+        actions: canonicalActions,
+        scanId,
+      }),
+    )
+    .digest('hex');
+}
+
 async function maybeInsertRows<T>(
   rows: T[],
   insert: (rows: T[]) => Promise<unknown>,
@@ -628,6 +663,41 @@ export async function createRepairService(
     return selected;
   }
 
+  function requireSelectedActions(
+    actions: FixAction[],
+    actionIds: string[],
+  ): FixAction[] {
+    if (actionIds.length === 0) {
+      throw createServiceError(
+        'action_selection_required',
+        400,
+        'Select at least one reviewed action before apply.',
+      );
+    }
+
+    const requestedIds = new Set(actionIds);
+    const selected = actions.filter((action) => requestedIds.has(action.id));
+
+    if (selected.length !== requestedIds.size) {
+      const foundIds = new Set(selected.map((action) => action.id));
+      const missing = [...requestedIds].filter(
+        (actionId) => !foundIds.has(actionId),
+      );
+      throw createServiceError(
+        'action_not_found',
+        400,
+        `Unknown action ids: ${missing.join(', ')}`,
+      );
+    }
+
+    return selected;
+  }
+
+  async function getFixActionsForScan(scanId: string): Promise<FixAction[]> {
+    const scan = await requireScanDetail(scanId);
+    return createFixActions(scan.inventory, scan.findings);
+  }
+
   async function resolveRequestedProfileName(
     requestedProfileName?: string,
   ): Promise<string | null> {
@@ -708,10 +778,16 @@ export async function createRepairService(
       request.scanId,
       request.findingIds,
     );
+    const scan = await requireScanDetail(request.scanId);
+    const actions = createFixActions(scan.inventory, findings);
+    const selection = createFixSelection(actions);
 
     return {
-      actions: createFixActions(findings),
+      actions,
+      generatedAt: new Date().toISOString(),
+      previewToken: createPreviewToken(request.scanId, actions),
       scanId: request.scanId,
+      selection,
     };
   }
 
@@ -724,13 +800,40 @@ export async function createRepairService(
       );
     }
 
-    const preview = await previewFixes(request);
+    if (request.previewToken.trim().length === 0) {
+      throw createServiceError(
+        'preview_token_required',
+        400,
+        'Apply requires the preview token returned by the reviewed preview step.',
+      );
+    }
+
+    const selectedActions = requireSelectedActions(
+      await getFixActionsForScan(request.scanId),
+      request.actionIds,
+    );
+    const expectedPreviewToken = createPreviewToken(
+      request.scanId,
+      selectedActions,
+    );
+
+    if (expectedPreviewToken !== request.previewToken) {
+      throw createServiceError(
+        'preview_mismatch',
+        409,
+        'The requested dry-run actions do not match the reviewed preview token. Generate a new preview before applying.',
+      );
+    }
+
+    const selection = createFixSelection(selectedActions);
 
     return {
-      actions: preview.actions,
+      actions: selectedActions,
       appliedCount: 0,
       mode: 'dry_run' as const,
-      scanId: preview.scanId,
+      previewToken: expectedPreviewToken,
+      scanId: request.scanId,
+      selection,
     };
   }
 

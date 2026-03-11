@@ -215,15 +215,69 @@ describe('storage service', () => {
           'fix:stale_entity:sensor.kitchen_light_power:review-stale',
         ]),
       );
+      expect(preview.previewToken).toEqual(expect.any(String));
+      expect(preview.selection.actionIds).toHaveLength(3);
+      expect(preview.selection.findingIds).toHaveLength(3);
+      const previewAction = preview.actions[0];
+      expect(previewAction).toBeDefined();
+      if (!previewAction) {
+        throw new Error('Expected preview action');
+      }
+
+      expect(previewAction.requiresConfirmation).toBe(true);
+      expect(previewAction.intent.length).toBeGreaterThan(0);
+      expect(previewAction.warnings.length).toBeGreaterThan(0);
+
+      const previewArtifact = previewAction.artifacts[0];
+      expect(previewArtifact).toBeDefined();
+      if (!previewArtifact) {
+        throw new Error('Expected preview artifact');
+      }
+
+      expect(previewArtifact.kind).toBe('text_diff');
+      expect(previewArtifact.content).toContain('@@ entity/');
+
+      const previewEdit = previewAction.edits[0];
+      expect(previewEdit).toBeDefined();
+      if (!previewEdit) {
+        throw new Error('Expected preview edit');
+      }
+
+      expect(previewEdit.fieldPath.length).toBeGreaterThan(0);
+      expect(previewEdit.targetId.length).toBeGreaterThan(0);
+
+      const previewTarget = previewAction.targets[0];
+      expect(previewTarget).toBeDefined();
+      if (!previewTarget) {
+        throw new Error('Expected preview target');
+      }
+
+      expect(previewTarget.id.length).toBeGreaterThan(0);
+      expect(previewTarget.kind.length).toBeGreaterThan(0);
 
       const applyResponse = await service.applyFixes({
+        actionIds: preview.selection.actionIds,
         dryRun: true,
+        previewToken: preview.previewToken,
         scanId: scan.id,
       });
       expect(applyResponse).toMatchObject({
         appliedCount: 0,
         mode: 'dry_run',
+        previewToken: preview.previewToken,
         scanId: scan.id,
+        selection: preview.selection,
+      });
+
+      await expect(
+        service.applyFixes({
+          actionIds: preview.selection.actionIds,
+          dryRun: true,
+          previewToken: 'stale-token',
+          scanId: scan.id,
+        }),
+      ).rejects.toMatchObject({
+        code: 'preview_mismatch',
       });
 
       const exportBundle = await service.exportScan();
