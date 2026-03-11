@@ -7,3 +7,5 @@ coverage/
 *.sqlite
 *.sqlite3
 .history/
+*.sqlite-wal
+*.sqlite-shm
