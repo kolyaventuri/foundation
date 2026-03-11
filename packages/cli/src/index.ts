@@ -1,6 +1,7 @@
 import process from 'node:process';
 import {Command, Option} from 'commander';
 import {
+  type AssistantKind,
   createFrameworkSummary,
   type ConnectionProfile,
   type Finding,
@@ -99,33 +100,106 @@ function parseEntityNameInput(value: string): {
   };
 }
 
+function parseAssistantExposureInput(value: string): {
+  targetId: string;
+  value: AssistantKind[];
+} {
+  const separatorIndex = value.indexOf('=');
+
+  if (separatorIndex <= 0) {
+    throw new RepairServiceError(
+      'invalid_preview_input',
+      400,
+      'Pass --assistant-exposures as entity_id=assist,alexa or entity_id= for none.',
+    );
+  }
+
+  const rawValue = value.slice(separatorIndex + 1).trim();
+  const selections =
+    rawValue.length === 0
+      ? []
+      : rawValue
+          .split(',')
+          .map((entry) => entry.trim())
+          .filter(
+            (entry): entry is AssistantKind =>
+              entry === 'assist' || entry === 'alexa' || entry === 'homekit',
+          );
+
+  if (
+    rawValue.length > 0 &&
+    selections.length !==
+      rawValue
+        .split(',')
+        .map((entry) => entry.trim())
+        .filter((entry) => entry.length > 0).length
+  ) {
+    throw new RepairServiceError(
+      'invalid_preview_input',
+      400,
+      'Assistant exposures must be a comma-separated subset of assist, alexa, and homekit.',
+    );
+  }
+
+  return {
+    targetId: value.slice(0, separatorIndex).trim(),
+    value: selections,
+  };
+}
+
 function buildPreviewInputs(
-  values: string[],
+  nameValues: string[],
+  assistantExposureValues: string[],
   findings: Finding[],
 ): FixPreviewInput[] {
-  return values.map((value) => {
-    const parsed = parseEntityNameInput(value);
-    const finding = findings.find(
-      (candidate) =>
-        candidate.kind === 'duplicate_name' &&
-        candidate.objectIds.includes(parsed.targetId),
-    );
-
-    if (!finding) {
-      throw new RepairServiceError(
-        'invalid_preview_input',
-        400,
-        `No selected duplicate-name finding includes ${parsed.targetId}.`,
+  return [
+    ...nameValues.map((value) => {
+      const parsed = parseEntityNameInput(value);
+      const finding = findings.find(
+        (candidate) =>
+          candidate.kind === 'duplicate_name' &&
+          candidate.objectIds.includes(parsed.targetId),
       );
-    }
 
-    return {
-      field: 'name',
-      findingId: finding.id,
-      targetId: parsed.targetId,
-      value: parsed.value,
-    };
-  });
+      if (!finding) {
+        throw new RepairServiceError(
+          'invalid_preview_input',
+          400,
+          `No selected duplicate-name finding includes ${parsed.targetId}.`,
+        );
+      }
+
+      return {
+        field: 'name' as const,
+        findingId: finding.id,
+        targetId: parsed.targetId,
+        value: parsed.value,
+      };
+    }),
+    ...assistantExposureValues.map((value) => {
+      const parsed = parseAssistantExposureInput(value);
+      const finding = findings.find(
+        (candidate) =>
+          candidate.kind === 'assistant_context_bloat' &&
+          candidate.objectIds.includes(parsed.targetId),
+      );
+
+      if (!finding) {
+        throw new RepairServiceError(
+          'invalid_preview_input',
+          400,
+          `No selected assistant-context finding includes ${parsed.targetId}.`,
+        );
+      }
+
+      return {
+        field: 'assistant_exposures' as const,
+        findingId: finding.id,
+        targetId: parsed.targetId,
+        value: parsed.value,
+      };
+    }),
+  ];
 }
 
 export function buildProgram() {
@@ -464,10 +538,17 @@ export function buildProgram() {
       collectRepeatedValue,
       [],
     )
+    .option(
+      '--assistant-exposures <entityId=assist,alexa>',
+      'Reviewed assistant surfaces to keep for an assistant-context-bloat target',
+      collectRepeatedValue,
+      [],
+    )
     .action(
       async (
         findingIds: string[],
         options: {
+          assistantExposures: string[];
           name: string[];
           scan: string;
         },
@@ -484,7 +565,11 @@ export function buildProgram() {
                 : selectedFindings.filter((finding) =>
                     findingIds.includes(finding.id),
                   );
-            const inputs = buildPreviewInputs(options.name, resolvedFindings);
+            const inputs = buildPreviewInputs(
+              options.name,
+              options.assistantExposures,
+              resolvedFindings,
+            );
 
             return service.previewFixes(
               findingIds.length > 0

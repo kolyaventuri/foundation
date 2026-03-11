@@ -15,7 +15,7 @@ const scan: ScanDetail = {
     previousScanId: null,
     regressedCount: 3,
     regressedFindingIds: [
-      'duplicate_name:Kitchen Light',
+      'duplicate_name:Kitchen Light:area.kitchen',
       'stale_entity:sensor.kitchen_light_power',
       'orphaned_entity_device:switch.orphaned_fan',
     ],
@@ -26,12 +26,13 @@ const scan: ScanDetail = {
   },
   findings: [
     {
-      evidence: 'Found 2 entities named "Kitchen Light".',
-      id: 'duplicate_name:Kitchen Light',
+      evidence:
+        'Found 2 user-facing entities in Kitchen that all display as "Kitchen Light", which creates an ambiguous in-area label collision.',
+      id: 'duplicate_name:Kitchen Light:area.kitchen',
       kind: 'duplicate_name',
       objectIds: ['light.kitchen_light', 'sensor.kitchen_light_power'],
       severity: 'medium',
-      title: 'Duplicate name: Kitchen Light',
+      title: 'Ambiguous name in Kitchen: Kitchen Light',
     },
     {
       evidence: 'Entity sensor.kitchen_light_power is marked stale.',
@@ -114,11 +115,11 @@ const scan: ScanDetail = {
 const workbench: ScanWorkbench = {
   entries: [
     {
-      findingId: 'duplicate_name:Kitchen Light',
+      findingId: 'duplicate_name:Kitchen Light:area.kitchen',
       savedInputs: [
         {
           field: 'name',
-          findingId: 'duplicate_name:Kitchen Light',
+          findingId: 'duplicate_name:Kitchen Light:area.kitchen',
           targetId: 'light.kitchen_light',
           value: 'Kitchen Light (light.kitchen_light)',
         },
@@ -162,7 +163,7 @@ describe('workbench helpers', () => {
       'advisory',
     ]);
     expect(groups[0]?.items[0]?.finding.id).toBe(
-      'duplicate_name:Kitchen Light',
+      'duplicate_name:Kitchen Light:area.kitchen',
     );
     expect(groups[1]?.items[0]?.finding.id).toBe(
       'stale_entity:sensor.kitchen_light_power',
@@ -179,11 +180,14 @@ describe('workbench helpers', () => {
     });
 
     expect(filtered.map((record) => record.finding.id)).toEqual([
-      'duplicate_name:Kitchen Light',
+      'duplicate_name:Kitchen Light:area.kitchen',
       'stale_entity:sensor.kitchen_light_power',
     ]);
     expect(
-      getNextRecommendedFindingId(records, 'duplicate_name:Kitchen Light'),
+      getNextRecommendedFindingId(
+        records,
+        'duplicate_name:Kitchen Light:area.kitchen',
+      ),
     ).toBe('stale_entity:sensor.kitchen_light_power');
   });
 

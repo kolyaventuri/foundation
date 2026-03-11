@@ -66,6 +66,13 @@ const baselineInventory: InventoryGraph = {
       name: null,
     },
     {
+      assistantExposureBindings: {
+        assist: {
+          flagKey: 'enabled',
+          optionKey: 'conversation',
+        },
+      },
+      assistantExposures: ['assist'],
       areaId: 'area.kitchen',
       disabledBy: null,
       displayName: 'Kitchen Light',
@@ -119,6 +126,13 @@ const changedInventory: InventoryGraph = {
       name: null,
     },
     {
+      assistantExposureBindings: {
+        assist: {
+          flagKey: 'enabled',
+          optionKey: 'conversation',
+        },
+      },
+      assistantExposures: ['assist'],
       areaId: 'area.kitchen',
       disabledBy: null,
       displayName: 'Kitchen Light',
@@ -428,13 +442,13 @@ describe('api server', () => {
           inputs: [
             {
               field: 'name',
-              findingId: 'duplicate_name:Kitchen Light',
+              findingId: 'duplicate_name:Kitchen Light:area.kitchen',
               targetId: 'light.kitchen_light',
               value: 'Kitchen Light (light.kitchen_light)',
             },
             {
               field: 'name',
-              findingId: 'duplicate_name:Kitchen Light',
+              findingId: 'duplicate_name:Kitchen Light:area.kitchen',
               targetId: 'sensor.kitchen_light_power',
               value: 'Kitchen Light (sensor.kitchen_light_power)',
             },
@@ -502,7 +516,9 @@ describe('api server', () => {
       const rejectedApply = await secondServer.inject({
         method: 'POST',
         payload: {
-          actionIds: ['fix:duplicate_name:Kitchen Light:rename:unexpected'],
+          actionIds: [
+            'fix:duplicate_name:Kitchen Light:area.kitchen:rename:unexpected',
+          ],
           dryRun: true,
           previewToken: previewBody.previewToken,
           scanId: secondScan.scan.id,
@@ -557,7 +573,7 @@ describe('api server', () => {
       expect(initialWorkbench.workbench.entries).toEqual(
         expect.arrayContaining([
           expect.objectContaining({
-            findingId: 'duplicate_name:Kitchen Light',
+            findingId: 'duplicate_name:Kitchen Light:area.kitchen',
             status: 'recommended',
           }),
           expect.objectContaining({
@@ -581,19 +597,19 @@ describe('api server', () => {
           inputs: [
             {
               field: 'name',
-              findingId: 'duplicate_name:Kitchen Light',
+              findingId: 'duplicate_name:Kitchen Light:area.kitchen',
               targetId: 'light.kitchen_light',
               value: 'Kitchen Light (light.kitchen_light)',
             },
             {
               field: 'name',
-              findingId: 'duplicate_name:Kitchen Light',
+              findingId: 'duplicate_name:Kitchen Light:area.kitchen',
               targetId: 'sensor.kitchen_light_power',
               value: 'Kitchen Light (sensor.kitchen_light_power)',
             },
           ],
         },
-        url: `/api/scans/${scan.scan.id}/workbench/items/${encodeURIComponent('duplicate_name:Kitchen Light')}`,
+        url: `/api/scans/${scan.scan.id}/workbench/items/${encodeURIComponent('duplicate_name:Kitchen Light:area.kitchen')}`,
       });
 
       expect(stagedDuplicateResponse.statusCode).toBe(200);
@@ -621,7 +637,7 @@ describe('api server', () => {
         previewResponse.body,
       );
       expect(previewBody.preview.selection.findingIds).toEqual([
-        'duplicate_name:Kitchen Light',
+        'duplicate_name:Kitchen Light:area.kitchen',
         'stale_entity:sensor.kitchen_light_power',
       ]);
       expect(previewBody.workbench.latestPreviewToken).toBe(

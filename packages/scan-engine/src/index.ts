@@ -1,5 +1,6 @@
 import {createHash} from 'node:crypto';
 import type {
+  AssistantKind,
   Finding,
   FindingAdvisory,
   FixAction,
@@ -43,31 +44,159 @@ function indexDevices(inventory: InventoryGraph) {
   );
 }
 
-function findDuplicateNameFindings(inventory: InventoryGraph): Finding[] {
-  const names = new Map<string, string[]>();
+const userFacingDomains = new Set([
+  'alarm_control_panel',
+  'climate',
+  'cover',
+  'fan',
+  'humidifier',
+  'light',
+  'lock',
+  'media_player',
+  'remote',
+  'scene',
+  'script',
+  'siren',
+  'switch',
+  'vacuum',
+  'valve',
+  'water_heater',
+]);
 
-  for (const entity of inventory.entities) {
-    const normalizedName = entity.displayName.trim();
+type ClassifiedEntity = {
+  displayLabel: string;
+  domain: string;
+  entity: InventoryEntity;
+  isUserFacing: boolean;
+  normalizedLabel: string;
+  resolvedAreaId: string | null;
+};
 
-    if (normalizedName.length === 0) {
+type AssistantExposureRequiredInput = Extract<
+  FixRequiredInput,
+  {field: 'assistant_exposures'}
+>;
+type NameRequiredInput = Extract<FixRequiredInput, {field: 'name'}>;
+
+function normalizeLabelKey(value: string): string {
+  return value.trim().replaceAll(/\s+/gu, ' ').toLowerCase();
+}
+
+function normalizeLabelDisplay(value: string): string {
+  return value.trim().replaceAll(/\s+/gu, ' ');
+}
+
+function getEntityDomain(entityId: string): string {
+  return entityId.split('.', 1)[0] ?? entityId;
+}
+
+function classifyEntities(inventory: InventoryGraph): ClassifiedEntity[] {
+  const devicesById = indexDevices(inventory);
+
+  return inventory.entities.flatMap((entity) => {
+    const displayLabel = normalizeLabelDisplay(entity.displayName);
+
+    if (displayLabel.length === 0) {
+      return [];
+    }
+
+    const device = entity.deviceId
+      ? devicesById.get(entity.deviceId)
+      : undefined;
+    const domain = getEntityDomain(entity.entityId);
+
+    return [
+      {
+        displayLabel,
+        domain,
+        entity,
+        isUserFacing:
+          userFacingDomains.has(domain) ||
+          (entity.assistantExposures?.length ?? 0) > 0,
+        normalizedLabel: normalizeLabelKey(displayLabel),
+        resolvedAreaId: entity.areaId ?? device?.areaId ?? null,
+      },
+    ];
+  });
+}
+
+function getAreaLabel(inventory: InventoryGraph, areaId: string): string {
+  return inventory.areas.find((area) => area.areaId === areaId)?.name ?? areaId;
+}
+
+function findNameLabelFindings(inventory: InventoryGraph): Finding[] {
+  const findings: Finding[] = [];
+  const classified = classifyEntities(inventory);
+  const entitiesByLabel = new Map<string, ClassifiedEntity[]>();
+
+  for (const entry of classified) {
+    const matches = entitiesByLabel.get(entry.normalizedLabel) ?? [];
+    matches.push(entry);
+    entitiesByLabel.set(entry.normalizedLabel, matches);
+  }
+
+  for (const entries of entitiesByLabel.values()) {
+    if (entries.length < 2) {
       continue;
     }
 
-    const matches = names.get(normalizedName) ?? [];
-    matches.push(entity.entityId);
-    names.set(normalizedName, matches);
+    const userFacingByArea = new Map<string, ClassifiedEntity[]>();
+
+    for (const entry of entries) {
+      if (!entry.isUserFacing || !entry.resolvedAreaId) {
+        continue;
+      }
+
+      const matches = userFacingByArea.get(entry.resolvedAreaId) ?? [];
+      matches.push(entry);
+      userFacingByArea.set(entry.resolvedAreaId, matches);
+    }
+
+    const actionableClusters = [...userFacingByArea.entries()].filter(
+      ([, areaEntries]) => areaEntries.length > 1,
+    );
+
+    if (actionableClusters.length > 0) {
+      for (const [areaId, areaEntries] of actionableClusters) {
+        const label = areaEntries[0]!.displayLabel;
+        const areaLabel = getAreaLabel(inventory, areaId);
+
+        findings.push({
+          evidence: `Found ${areaEntries.length} user-facing entities in ${areaLabel} that all display as "${label}", which creates an ambiguous in-area label collision.`,
+          id: `duplicate_name:${label}:${areaId}`,
+          kind: 'duplicate_name',
+          objectIds: areaEntries.map((entry) => entry.entity.entityId),
+          severity: 'medium',
+          title: `Ambiguous name in ${areaLabel}: ${label}`,
+        });
+      }
+
+      continue;
+    }
+
+    const label = entries[0]!.displayLabel;
+    const domains = [...new Set(entries.map((entry) => entry.domain))].sort();
+    const areaLabels = [
+      ...new Set(
+        entries.map((entry) =>
+          entry.resolvedAreaId
+            ? getAreaLabel(inventory, entry.resolvedAreaId)
+            : 'Unassigned',
+        ),
+      ),
+    ].sort();
+
+    findings.push({
+      evidence: `Label "${label}" is shared by ${entries.length} entities across domains ${domains.join(', ')} and areas ${areaLabels.join(', ')}, but does not create a user-facing in-area collision.`,
+      id: `shared_label_observation:${label}`,
+      kind: 'shared_label_observation',
+      objectIds: entries.map((entry) => entry.entity.entityId),
+      severity: 'low',
+      title: `Shared label observation: ${label}`,
+    });
   }
 
-  return [...names.entries()]
-    .filter(([, entityIds]) => entityIds.length > 1)
-    .map(([name, entityIds]) => ({
-      evidence: `Found ${entityIds.length} entities displayed as "${name}".`,
-      id: `duplicate_name:${name}`,
-      kind: 'duplicate_name',
-      objectIds: entityIds,
-      severity: 'medium',
-      title: `Duplicate name: ${name}`,
-    }));
+  return findings;
 }
 
 function findOrphanedDeviceLinks(inventory: InventoryGraph): Finding[] {
@@ -247,7 +376,8 @@ function findAssistantContextBloat(inventory: InventoryGraph): Finding[] {
       id: `assistant_context_bloat:${entity.entityId}`,
       kind: 'assistant_context_bloat',
       objectIds: [entity.entityId, ...(entity.assistantExposures ?? [])],
-      severity: 'low',
+      severity:
+        (entity.assistantExposures?.length ?? 0) >= 3 ? 'medium' : 'low',
       title: `Assistant context bloat for ${entity.entityId}`,
     }));
 }
@@ -292,6 +422,34 @@ function createNameRecommendation(entity: InventoryEntity): string {
   return `${entity.displayName} (${entity.entityId})`;
 }
 
+function createSharedLabelObservationAdvisory(
+  inventory: InventoryGraph,
+  finding: Finding,
+): FindingAdvisory {
+  return {
+    findingId: finding.id,
+    id: `advisory:${finding.id}`,
+    rationale:
+      'Repeated labels that span different roles or areas are noted for awareness, but they are not treated as a direct rename target unless they create a user-facing in-area collision.',
+    steps: [
+      'Review the entities sharing the label and confirm whether the overlap is intentional.',
+      'Rename only if the overlap is actually confusing in your dashboards or assistant flows.',
+      'Rerun the scan to confirm whether a future in-area collision remains.',
+    ],
+    summary:
+      'Review whether the shared label is intentional, then rerun the scan after any manual cleanup.',
+    targets: finding.objectIds.map((objectId) => ({
+      id: objectId,
+      kind: 'entity' as const,
+      label: getEntityLabel(inventory, objectId),
+    })),
+    title: `Manual review required for ${finding.title}`,
+    warnings: [
+      'Renaming helpers, automations, or sensors purely to eliminate harmless label reuse can create churn without improving the Home Assistant setup.',
+    ],
+  };
+}
+
 function indexInputs(inputs: FixPreviewInput[]): Map<string, FixPreviewInput> {
   return new Map(
     inputs.map((input) => [
@@ -301,21 +459,70 @@ function indexInputs(inputs: FixPreviewInput[]): Map<string, FixPreviewInput> {
   );
 }
 
+function getNameInputValue(
+  indexedInputs: Map<string, FixPreviewInput>,
+  findingId: string,
+  entityId: string,
+): string | undefined {
+  const input = indexedInputs.get(`${findingId}:${entityId}:name`);
+
+  if (!input || input.field !== 'name') {
+    return undefined;
+  }
+
+  const trimmedValue = input.value.trim();
+  return trimmedValue.length > 0 ? trimmedValue : undefined;
+}
+
+function getAssistantExposureInputValue(
+  indexedInputs: Map<string, FixPreviewInput>,
+  findingId: string,
+  entityId: string,
+): AssistantKind[] | undefined {
+  const input = indexedInputs.get(
+    `${findingId}:${entityId}:assistant_exposures`,
+  );
+
+  if (!input || input.field !== 'assistant_exposures') {
+    return undefined;
+  }
+
+  return [...new Set(input.value)].sort();
+}
+
+function areAssistantExposureSetsEqual(
+  left: AssistantKind[] | undefined,
+  right: AssistantKind[] | undefined,
+): boolean {
+  if (!left || !right) {
+    return left === right;
+  }
+
+  return (
+    left.length === right.length &&
+    left.every((assistant, index) => assistant === right[index])
+  );
+}
+
 function createDuplicateNameAction(
   inventory: InventoryGraph,
   finding: Finding,
   indexedInputs: Map<string, FixPreviewInput>,
 ): FixAction {
-  const requiredInputs: FixRequiredInput[] = finding.objectIds.map(
+  const requiredInputs: NameRequiredInput[] = finding.objectIds.map(
     (entityId, index) => {
       const entity = getEntity(inventory, entityId);
-      const input = indexedInputs.get(`${finding.id}:${entityId}:name`);
+      const providedValue = getNameInputValue(
+        indexedInputs,
+        finding.id,
+        entityId,
+      );
 
       return {
         currentValue: entity?.name ?? null,
         field: 'name',
         id: `input:${finding.id}:${index}:name`,
-        ...(input?.value ? {providedValue: input.value} : {}),
+        ...(providedValue ? {providedValue} : {}),
         ...(entity ? {recommendedValue: createNameRecommendation(entity)} : {}),
         summary: `Provide the exact Home Assistant entity registry name to assign to ${entityId}.`,
         targetId: entityId,
@@ -367,7 +574,7 @@ function createDuplicateNameAction(
     requiresConfirmation: true,
     risk: 'medium',
     steps: [
-      'Review each entity sharing the duplicate display name.',
+      'Review each entity sharing the ambiguous in-area display name.',
       'Provide the exact entity registry name to send for each selected entity.',
       'Review the resulting websocket payloads before dry-run apply.',
     ],
@@ -376,9 +583,125 @@ function createDuplicateNameAction(
       kind: 'entity' as const,
       label: getEntityLabel(inventory, entityId),
     })),
-    title: `Rename duplicate entities for ${finding.title.replace('Duplicate name: ', '')}`,
+    title: `Rename entities for ${finding.title}`,
     warnings: [
       'Renaming entities can affect dashboards, automations, and voice-assistant phrases that reference the current display name.',
+    ],
+  };
+}
+
+function createAssistantExposureAction(
+  inventory: InventoryGraph,
+  finding: Finding,
+  indexedInputs: Map<string, FixPreviewInput>,
+): FixAction {
+  const entityId = finding.objectIds[0]!;
+  const entity = getEntity(inventory, entityId);
+  const currentExposures = [
+    ...new Set(entity?.assistantExposures ?? []),
+  ].sort();
+  const allowedExposureSet = new Set(currentExposures);
+  const providedValue = getAssistantExposureInputValue(
+    indexedInputs,
+    finding.id,
+    entityId,
+  )?.filter((assistant) => allowedExposureSet.has(assistant));
+  const requiredInput: AssistantExposureRequiredInput = {
+    currentValue: currentExposures,
+    field: 'assistant_exposures',
+    id: `input:${finding.id}:assistant_exposures`,
+    ...(providedValue ? {providedValue} : {}),
+    summary: `Choose which assistant surfaces should keep exposing ${entityId}.`,
+    targetId: entityId,
+  };
+  const hasChange =
+    providedValue !== undefined &&
+    !areAssistantExposureSetsEqual(currentExposures, providedValue);
+  let optionUpdates: NonNullable<FixCommand['payload']['options']> | undefined;
+
+  if (hasChange && entity?.assistantExposureBindings) {
+    optionUpdates = {};
+
+    for (const assistant of currentExposures) {
+      const binding = entity.assistantExposureBindings[assistant];
+
+      if (!binding) {
+        continue;
+      }
+
+      optionUpdates[binding.optionKey] = {
+        [binding.flagKey]: providedValue.includes(assistant),
+      };
+    }
+  }
+
+  const command: FixCommand | undefined =
+    hasChange && optionUpdates && Object.keys(optionUpdates).length > 0
+      ? {
+          id: `command:${finding.id}:entity_registry_update`,
+          payload: {
+            entity_id: entityId,
+            options: optionUpdates,
+            type: 'config/entity_registry/update' as const,
+          },
+          summary: `Send config/entity_registry/update for ${entityId} with the reviewed assistant exposure set.`,
+          targetId: entityId,
+          transport: 'websocket' as const,
+        }
+      : undefined;
+
+  return {
+    artifacts:
+      !command || !optionUpdates
+        ? []
+        : [
+            createDiffArtifact(
+              `fix:${finding.id}:review-exposure`,
+              [
+                `@@ entity_registry/${entityId}/options`,
+                ...currentExposures.flatMap((assistant) => {
+                  const binding =
+                    entity?.assistantExposureBindings?.[assistant];
+
+                  if (!binding) {
+                    return [];
+                  }
+
+                  return [
+                    `- ${binding.optionKey}.${binding.flagKey}: true`,
+                    `+ ${binding.optionKey}.${binding.flagKey}: ${providedValue!.includes(assistant) ? 'true' : 'false'}`,
+                  ];
+                }),
+              ],
+              'entity-registry-assistant-exposure-review.diff',
+            ),
+          ],
+    commands: command ? [command] : [],
+    findingId: finding.id,
+    id: `fix:${finding.id}:review-assistant-exposure`,
+    intent:
+      'Review and narrow assistant exposure for the entity by sending an explicit entity registry update payload.',
+    kind: 'review_assistant_exposure',
+    rationale:
+      'Reducing redundant assistant exposure lowers ambiguity without renaming or disabling the entity.',
+    requiredInputs: [requiredInput],
+    requiresConfirmation: true,
+    risk: 'low',
+    steps: [
+      'Review the currently exposed assistant surfaces.',
+      'Choose which existing assistant surfaces should remain enabled.',
+      'Review the resulting websocket payload before dry-run apply.',
+    ],
+    targets: [
+      {
+        id: entityId,
+        kind: 'entity' as const,
+        label: getEntityLabel(inventory, entityId),
+      },
+    ],
+    title: `Review assistant exposure for ${entityId}`,
+    warnings: [
+      'Removing the wrong assistant exposure can break existing household voice routines or assistant-specific expectations.',
     ],
   };
 }
@@ -452,6 +775,12 @@ export function createFixActions(
 
   return findings.flatMap((finding) => {
     switch (finding.kind) {
+      case 'assistant_context_bloat': {
+        return [
+          createAssistantExposureAction(inventory, finding, indexedInputs),
+        ];
+      }
+
       case 'duplicate_name': {
         return [createDuplicateNameAction(inventory, finding, indexedInputs)];
       }
@@ -460,13 +789,16 @@ export function createFixActions(
         return [createStaleEntityAction(inventory, finding)];
       }
 
-      case 'assistant_context_bloat':
       case 'automation_invalid_target':
       case 'dangling_label_reference':
       case 'missing_area_assignment':
       case 'missing_floor_assignment':
       case 'orphaned_entity_device':
       case 'scene_invalid_target': {
+        return [];
+      }
+
+      case 'shared_label_observation': {
         return [];
       }
     }
@@ -642,26 +974,12 @@ export function createFindingAdvisories(
         ];
       }
 
-      case 'assistant_context_bloat': {
-        return [
-          createGenericAdvisory(
-            inventory,
-            finding,
-            'Assistant exposure should be reviewed manually because each voice surface has different naming and exposure expectations.',
-            'Review whether the entity really needs to be exposed to multiple assistant surfaces.',
-            [
-              'Review the entity exposure settings for Assist, Alexa, and HomeKit.',
-              'Disable exposure where the entity is redundant.',
-              'Rerun the scan to confirm the exposure warning clears.',
-            ],
-            [
-              'Removing the wrong exposure can break existing voice routines or household expectations.',
-            ],
-          ),
-        ];
+      case 'shared_label_observation': {
+        return [createSharedLabelObservationAdvisory(inventory, finding)];
       }
 
       case 'duplicate_name':
+      case 'assistant_context_bloat':
       case 'stale_entity': {
         return [];
       }
@@ -681,7 +999,7 @@ function createDefaultEnrichment(): ScanEnrichment {
 
 function buildFindings(inventory: InventoryGraph): Finding[] {
   return [
-    ...findDuplicateNameFindings(inventory),
+    ...findNameLabelFindings(inventory),
     ...findOrphanedDeviceLinks(inventory),
     ...findStaleEntities(inventory),
     ...findMissingAreaAssignments(inventory),

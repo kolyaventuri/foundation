@@ -35,6 +35,13 @@ const baselineInventory: InventoryGraph = {
       name: null,
     },
     {
+      assistantExposureBindings: {
+        assist: {
+          flagKey: 'enabled',
+          optionKey: 'conversation',
+        },
+      },
+      assistantExposures: ['assist'],
       areaId: 'area.kitchen',
       disabledBy: null,
       displayName: 'Kitchen Light',
@@ -97,6 +104,32 @@ const floorCoverageInventory: InventoryGraph = {
   ],
 };
 
+const sharedLabelObservationInventory: InventoryGraph = {
+  areas: [],
+  automations: [],
+  devices: [],
+  entities: [
+    {
+      disabledBy: null,
+      displayName: 'Anyone Home?',
+      entityId: 'automation.anyone_home',
+      isStale: false,
+      name: null,
+    },
+    {
+      disabledBy: null,
+      displayName: 'Anyone Home?',
+      entityId: 'input_boolean.anyone_home',
+      isStale: false,
+      name: null,
+    },
+  ],
+  floors: [],
+  labels: [],
+  scenes: [],
+  source: 'mock',
+};
+
 describe('scan-engine', () => {
   it('describes the initial scaffold surfaces', () => {
     const summary = createFrameworkSummary();
@@ -120,18 +153,35 @@ describe('scan-engine', () => {
     );
   });
 
+  it('downgrades non-user-facing shared labels to advisory observations', () => {
+    const result = runScan(sharedLabelObservationInventory);
+
+    expect(result.findings).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: 'shared_label_observation:Anyone Home?',
+          kind: 'shared_label_observation',
+          severity: 'low',
+        }),
+      ]),
+    );
+    expect(
+      createFixActions(sharedLabelObservationInventory, result.findings),
+    ).toEqual([]);
+  });
+
   it('builds literal Home Assistant commands only for supported actions', () => {
     const scan = runScan(baselineInventory);
     const actions = createFixActions(baselineInventory, scan.findings, [
       {
         field: 'name',
-        findingId: 'duplicate_name:Kitchen Light',
+        findingId: 'duplicate_name:Kitchen Light:area.kitchen',
         targetId: 'light.kitchen_light',
         value: 'Kitchen Light (light.kitchen_light)',
       },
       {
         field: 'name',
-        findingId: 'duplicate_name:Kitchen Light',
+        findingId: 'duplicate_name:Kitchen Light:area.kitchen',
         targetId: 'sensor.kitchen_light_power',
         value: 'Kitchen Light (sensor.kitchen_light_power)',
       },

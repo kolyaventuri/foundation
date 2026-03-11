@@ -16,8 +16,15 @@ export type FindingKind =
   | 'missing_floor_assignment'
   | 'orphaned_entity_device'
   | 'scene_invalid_target'
+  | 'shared_label_observation'
   | 'stale_entity';
 export type AssistantKind = 'assist' | 'alexa' | 'homekit';
+export type AssistantExposureOptionKey = AssistantKind | 'conversation';
+export type AssistantExposureFlagKey = 'enabled' | 'expose' | 'should_expose';
+export type AssistantExposureBinding = {
+  flagKey: AssistantExposureFlagKey;
+  optionKey: AssistantExposureOptionKey;
+};
 export type ScanPassName =
   | 'connection'
   | 'inventory'
@@ -97,6 +104,9 @@ export type ProfileDeleteResponse = {
 
 export type InventoryEntity = {
   areaId?: string | null;
+  assistantExposureBindings?: Partial<
+    Record<AssistantKind, AssistantExposureBinding>
+  >;
   assistantExposures?: AssistantKind[];
   deviceId?: string | null;
   disabledBy?: string | null;
@@ -314,7 +324,178 @@ export type BackupCheckpointResponse = {
   scanId: string;
 };
 
-export type FixActionKind = 'rename_duplicate_name' | 'review_stale_entity';
+export type FixActionKind =
+  | 'rename_duplicate_name'
+  | 'review_assistant_exposure'
+  | 'review_stale_entity';
+
+export type FindingDefinition = {
+  definition: string;
+  label: string;
+  operatorGuidance: string;
+  whyItMatters: string;
+};
+
+export type FixActionDefinition = {
+  definition: string;
+  label: string;
+  reviewFocus: string;
+};
+
+const findingDefinitions = {
+  assistant_context_bloat: {
+    definition:
+      'Assistant exposure bloat means one entity is exposed to multiple assistant surfaces, such as Assist, Alexa, and HomeKit.',
+    label: 'Assistant exposure',
+    operatorGuidance:
+      'Keep only the assistant surfaces that actively need this entity, then rerun the scan to confirm the remaining exposure set is intentional.',
+    whyItMatters:
+      'Each extra surface adds naming, routine, troubleshooting, and privacy overhead. If an entity only needs to exist in one or two assistants, the rest is usually noise.',
+  },
+  automation_invalid_target: {
+    definition:
+      'An automation invalid target means the automation still references an entity that is missing from the current Home Assistant inventory.',
+    label: 'Automation targets',
+    operatorGuidance:
+      'Open the automation definition, repair or remove the missing entity references, and rerun the scan.',
+    whyItMatters:
+      'Broken targets can make automations fail, partially execute, or silently stop doing useful work.',
+  },
+  dangling_label_reference: {
+    definition:
+      'A dangling label reference means an entity or device still points at a label that no longer exists in the label registry.',
+    label: 'Dangling labels',
+    operatorGuidance:
+      'Either recreate the intended label or remove the stale label reference from the affected object, then rerun the scan.',
+    whyItMatters:
+      'Missing labels break custom grouping, filters, and organizational conventions that depend on stable label IDs.',
+  },
+  duplicate_name: {
+    definition:
+      'A duplicate name finding means two or more user-facing entities in the same area resolve to the same normalized display name.',
+    label: 'Ambiguous names',
+    operatorGuidance:
+      'Rename the entities so each user-facing surface has a distinct name that still makes sense in the room where it appears.',
+    whyItMatters:
+      'Same-area name collisions are hard to distinguish in dashboards, target pickers, and voice flows, so operators and assistants can target the wrong thing.',
+  },
+  missing_area_assignment: {
+    definition:
+      'A missing area assignment means the entity and its backing device do not currently resolve to any Home Assistant area.',
+    label: 'Area coverage',
+    operatorGuidance:
+      'Assign the entity or its backing device to the correct area, then rerun the scan.',
+    whyItMatters:
+      'Without an area, room-based dashboards, views, and assistant targeting lose useful context.',
+  },
+  missing_floor_assignment: {
+    definition:
+      'A missing floor assignment means the entity and its backing device do not currently resolve to any Home Assistant floor.',
+    label: 'Floor coverage',
+    operatorGuidance:
+      'Assign the entity or its backing device to the correct floor, then rerun the scan.',
+    whyItMatters:
+      'Floor-aware dashboards and targeting depend on correct level context, especially in multi-story homes.',
+  },
+  orphaned_entity_device: {
+    definition:
+      'An orphaned entity/device link means the entity registry entry still points at a device ID that no longer exists in the device registry.',
+    label: 'Orphaned device links',
+    operatorGuidance:
+      'Repair the underlying integration or recreate the entity/device relationship in Home Assistant, then rerun the scan.',
+    whyItMatters:
+      'Broken device links make area inheritance, grouping, and device-level management unreliable.',
+  },
+  scene_invalid_target: {
+    definition:
+      'A scene invalid target means the scene still references an entity that is missing from the current inventory.',
+    label: 'Scene targets',
+    operatorGuidance:
+      'Open the scene definition, repair or remove the missing entity references, and rerun the scan.',
+    whyItMatters:
+      'Broken scene membership changes what a scene controls and can leave activations incomplete or misleading.',
+  },
+  shared_label_observation: {
+    definition:
+      'A shared label observation means multiple entities reuse the same display label, but they do not form the stricter same-area user-facing collision that warrants a rename by default.',
+    label: 'Shared labels',
+    operatorGuidance:
+      'Treat this as awareness, not mandatory cleanup. Rename only if the shared label is actually confusing in your dashboards, voice flows, or maintenance work.',
+    whyItMatters:
+      'Repeated labels can still slow review and troubleshooting, but they are often legitimate when the entities play different roles or live in different areas.',
+  },
+  stale_entity: {
+    definition:
+      'A stale entity is present in the registry, but it has no live state or currently reports as unavailable.',
+    label: 'Stale entities',
+    operatorGuidance:
+      'Confirm the entity is no longer needed, then disable it in the entity registry or remove its source integration or helper.',
+    whyItMatters:
+      'Stale entities add noise to dashboards, pickers, repairs, and assistant context, and they can keep dead integrations or helpers looking active.',
+  },
+} satisfies Record<FindingKind, FindingDefinition>;
+
+const fixActionDefinitions = {
+  rename_duplicate_name: {
+    definition:
+      'This fix stages entity-registry name updates so the colliding entities stop sharing the same in-area user-facing label.',
+    label: 'Rename ambiguous entities',
+    reviewFocus:
+      'Pick distinct, durable names that remain clear in dashboards, target pickers, and voice commands.',
+  },
+  review_assistant_exposure: {
+    definition:
+      'This fix stages assistant exposure flag updates in the entity registry so the entity is exposed only to the assistant surfaces you keep.',
+    label: 'Review assistant exposure',
+    reviewFocus:
+      'Remove assistants that do not need this entity. An unchecked surface stops seeing it after the change is applied.',
+  },
+  review_stale_entity: {
+    definition:
+      'This fix stages an entity-registry update that sets disabled_by to user, so Home Assistant stops treating the stale entity as an active surface.',
+    label: 'Disable stale entity',
+    reviewFocus:
+      'Confirm no dashboards, automations, templates, or assistant flows still depend on the entity before disabling it.',
+  },
+} satisfies Record<FixActionKind, FixActionDefinition>;
+
+export function getFindingDefinition(kind: FindingKind): FindingDefinition {
+  return findingDefinitions[kind];
+}
+
+export function getFixActionDefinition(
+  kind: FixActionKind,
+): FixActionDefinition {
+  return fixActionDefinitions[kind];
+}
+
+export function getFindingActionKind(
+  kind: FindingKind,
+): FixActionKind | undefined {
+  switch (kind) {
+    case 'duplicate_name': {
+      return 'rename_duplicate_name';
+    }
+
+    case 'assistant_context_bloat': {
+      return 'review_assistant_exposure';
+    }
+
+    case 'stale_entity': {
+      return 'review_stale_entity';
+    }
+
+    case 'automation_invalid_target':
+    case 'dangling_label_reference':
+    case 'missing_area_assignment':
+    case 'missing_floor_assignment':
+    case 'orphaned_entity_device':
+    case 'scene_invalid_target':
+    case 'shared_label_observation': {
+      return undefined;
+    }
+  }
+}
 
 export type FixRisk = 'low' | 'medium' | 'high';
 
@@ -326,28 +507,49 @@ export type FixTarget = {
   label: string;
 };
 
+export type EntityRegistryUpdatePayload = {
+  disabled_by?: string | null;
+  entity_id: string;
+  name?: string;
+  options?: Partial<
+    Record<
+      AssistantExposureOptionKey,
+      Partial<Record<AssistantExposureFlagKey, boolean>>
+    >
+  >;
+  type: 'config/entity_registry/update';
+};
+
 export type FixCommand = {
   id: string;
   summary: string;
   targetId: string;
   transport: 'websocket';
-  payload: {
-    disabled_by?: string | null;
-    entity_id: string;
-    name?: string;
-    type: 'config/entity_registry/update';
-  };
+  payload: EntityRegistryUpdatePayload;
 };
 
-export type FixRequiredInput = {
-  currentValue: string | null;
-  field: 'name';
+export type FixInputField = 'assistant_exposures' | 'name';
+
+type BaseFixInput = {
+  field: FixInputField;
   id: string;
-  providedValue?: string;
-  recommendedValue?: string;
   summary: string;
   targetId: string;
 };
+
+export type FixRequiredInput =
+  | (BaseFixInput & {
+      currentValue: string | null;
+      field: 'name';
+      providedValue?: string;
+      recommendedValue?: string;
+    })
+  | (BaseFixInput & {
+      currentValue: AssistantKind[];
+      field: 'assistant_exposures';
+      providedValue?: AssistantKind[];
+      recommendedValue?: AssistantKind[];
+    });
 
 export type FixArtifactKind = 'text_diff' | 'yaml_diff';
 
@@ -375,12 +577,19 @@ export type FixAction = {
   warnings: string[];
 };
 
-export type FixPreviewInput = {
-  field: 'name';
-  findingId: string;
-  targetId: string;
-  value: string;
-};
+export type FixPreviewInput =
+  | {
+      field: 'name';
+      findingId: string;
+      targetId: string;
+      value: string;
+    }
+  | {
+      field: 'assistant_exposures';
+      findingId: string;
+      targetId: string;
+      value: AssistantKind[];
+    };
 
 export type FindingAdvisory = {
   findingId: string;

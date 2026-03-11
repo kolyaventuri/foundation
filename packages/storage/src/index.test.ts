@@ -183,6 +183,13 @@ const baselineInventory: InventoryGraph = {
       name: null,
     },
     {
+      assistantExposureBindings: {
+        assist: {
+          flagKey: 'enabled',
+          optionKey: 'conversation',
+        },
+      },
+      assistantExposures: ['assist'],
       areaId: 'area.kitchen',
       disabledBy: null,
       displayName: 'Kitchen Light',
@@ -236,6 +243,13 @@ const changedInventory: InventoryGraph = {
       name: null,
     },
     {
+      assistantExposureBindings: {
+        assist: {
+          flagKey: 'enabled',
+          optionKey: 'conversation',
+        },
+      },
+      assistantExposures: ['assist'],
       areaId: 'area.kitchen',
       disabledBy: null,
       displayName: 'Kitchen Light',
@@ -465,7 +479,7 @@ describe('storage service', () => {
         unchangedCount: 1,
       });
       expect(secondScan.diffSummary.unchangedFindingIds).toContain(
-        'duplicate_name:Kitchen Light',
+        'duplicate_name:Kitchen Light:area.kitchen',
       );
       expect(secondScan.diffSummary.regressedFindingIds).toContain(
         'orphaned_entity_device:switch.new_orphan',
@@ -517,13 +531,13 @@ describe('storage service', () => {
         inputs: [
           {
             field: 'name',
-            findingId: 'duplicate_name:Kitchen Light',
+            findingId: 'duplicate_name:Kitchen Light:area.kitchen',
             targetId: 'light.kitchen_light',
             value: 'Kitchen Light (light.kitchen_light)',
           },
           {
             field: 'name',
-            findingId: 'duplicate_name:Kitchen Light',
+            findingId: 'duplicate_name:Kitchen Light:area.kitchen',
             targetId: 'sensor.kitchen_light_power',
             value: 'Kitchen Light (sensor.kitchen_light_power)',
           },
@@ -542,7 +556,7 @@ describe('storage service', () => {
       );
       expect(preview.actions.map((action) => action.id)).toEqual(
         expect.arrayContaining([
-          'fix:duplicate_name:Kitchen Light:rename',
+          'fix:duplicate_name:Kitchen Light:area.kitchen:rename',
           'fix:stale_entity:sensor.kitchen_light_power:review-stale',
         ]),
       );
@@ -679,7 +693,8 @@ describe('storage service', () => {
       expect(initialWorkbench.workbench.isPreviewStale).toBe(false);
       expect(
         initialWorkbench.workbench.entries.find(
-          (entry) => entry.findingId === 'duplicate_name:Kitchen Light',
+          (entry) =>
+            entry.findingId === 'duplicate_name:Kitchen Light:area.kitchen',
         ),
       ).toMatchObject({
         status: 'recommended',
@@ -707,16 +722,20 @@ describe('storage service', () => {
       });
 
       await expect(
-        firstService.saveWorkbenchItem(scanId, 'duplicate_name:Kitchen Light', {
-          inputs: [
-            {
-              field: 'name',
-              findingId: 'duplicate_name:Kitchen Light',
-              targetId: 'light.kitchen_light',
-              value: 'Kitchen Light (light.kitchen_light)',
-            },
-          ],
-        }),
+        firstService.saveWorkbenchItem(
+          scanId,
+          'duplicate_name:Kitchen Light:area.kitchen',
+          {
+            inputs: [
+              {
+                field: 'name',
+                findingId: 'duplicate_name:Kitchen Light:area.kitchen',
+                targetId: 'light.kitchen_light',
+                value: 'Kitchen Light (light.kitchen_light)',
+              },
+            ],
+          },
+        ),
       ).rejects.toMatchObject({
         code: 'fix_input_required',
         statusCode: 400,
@@ -724,18 +743,18 @@ describe('storage service', () => {
 
       const stagedDuplicate = await firstService.saveWorkbenchItem(
         scanId,
-        'duplicate_name:Kitchen Light',
+        'duplicate_name:Kitchen Light:area.kitchen',
         {
           inputs: [
             {
               field: 'name',
-              findingId: 'duplicate_name:Kitchen Light',
+              findingId: 'duplicate_name:Kitchen Light:area.kitchen',
               targetId: 'light.kitchen_light',
               value: 'Kitchen Light (light.kitchen_light)',
             },
             {
               field: 'name',
-              findingId: 'duplicate_name:Kitchen Light',
+              findingId: 'duplicate_name:Kitchen Light:area.kitchen',
               targetId: 'sensor.kitchen_light_power',
               value: 'Kitchen Light (sensor.kitchen_light_power)',
             },
@@ -744,7 +763,7 @@ describe('storage service', () => {
       );
 
       expect(stagedDuplicate.entry).toMatchObject({
-        findingId: 'duplicate_name:Kitchen Light',
+        findingId: 'duplicate_name:Kitchen Light:area.kitchen',
         status: 'staged',
       });
       expect(stagedDuplicate.workbench.stagedCount).toBe(1);
@@ -760,7 +779,7 @@ describe('storage service', () => {
       expect(stagedStale.workbench.entries).toEqual(
         expect.arrayContaining([
           expect.objectContaining({
-            findingId: 'duplicate_name:Kitchen Light',
+            findingId: 'duplicate_name:Kitchen Light:area.kitchen',
             status: 'staged',
           }),
           expect.objectContaining({
@@ -772,7 +791,7 @@ describe('storage service', () => {
 
       const previewResponse = await firstService.previewWorkbench(scanId);
       expect(previewResponse.preview.selection.findingIds).toEqual([
-        'duplicate_name:Kitchen Light',
+        'duplicate_name:Kitchen Light:area.kitchen',
         'stale_entity:sensor.kitchen_light_power',
       ]);
       expect(previewResponse.workbench.isPreviewStale).toBe(false);
@@ -845,7 +864,7 @@ describe('storage service', () => {
       expect(exportBundle.actions).toEqual(
         expect.arrayContaining([
           expect.objectContaining({
-            id: 'fix:duplicate_name:Kitchen Light:rename',
+            id: 'fix:duplicate_name:Kitchen Light:area.kitchen:rename',
           }),
         ]),
       );
@@ -870,9 +889,21 @@ describe('storage service', () => {
       expect(normalizedMarkdown).toContain(
         'Commands: No literal Home Assistant payloads generated yet.',
       );
+      expect(normalizedMarkdown).toContain(
+        'Definition: A stale entity is present in the registry, but it has no live state or currently reports as unavailable.',
+      );
+      expect(normalizedMarkdown).toContain(
+        'Definition: This fix stages entity-registry name updates so the colliding entities stop sharing the same in-area user-facing label.',
+      );
+      expect(normalizedMarkdown).toContain(
+        'Review focus: Confirm no dashboards, automations, templates, or assistant flows still depend on the entity before disabling it.',
+      );
       expect(normalizedMarkdown).toContain('## Advisory Findings');
       expect(normalizedMarkdown).toContain(
         'This finding stays advisory-only because there is no supported literal Home Assistant mutation for clearing the broken device link.',
+      );
+      expect(normalizedMarkdown).toContain(
+        'Definition: An orphaned entity/device link means the entity registry entry still points at a device ID that no longer exists in the device registry.',
       );
       expect(normalizedMarkdown).toContain(
         '"type": "config/entity_registry/update"',

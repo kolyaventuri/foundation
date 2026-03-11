@@ -12,48 +12,50 @@ import {
   text,
   uniqueIndex,
 } from 'drizzle-orm/sqlite-core';
-import type {
-  ApiErrorResponse,
-  BackupCheckpoint,
-  BackupCheckpointCreateRequest,
-  BackupCheckpointResponse,
-  ConnectionProfile,
-  ConnectionResult,
-  Finding,
-  FindingAdvisory,
-  FindingKind,
-  FindingTreatment,
-  FindingSeverity,
-  FixAction,
-  FixApplyRequest,
-  FixApplyResponse,
-  FixPreviewInput,
-  FixQueueEntry,
-  FixQueueStatus,
-  FixPreviewRequest,
-  FixPreviewResponse,
-  FixSelection,
-  InventoryGraph,
-  ProviderKind,
-  ProfileDeleteResponse,
-  SavedConnectionProfile,
-  ScanCreateRequest,
-  ScanDetail,
-  ScanDiffSummary,
-  ScanExportBundle,
-  ScanHistoryEntry,
-  ScanMode,
-  ScanRun,
-  ScanWorkbench,
-  ScanWorkbenchResponse,
-  WorkbenchApplyRequest,
-  WorkbenchApplyResponse,
-  WorkbenchEntry,
-  WorkbenchEntryStatus,
-  WorkbenchItemDeleteResponse,
-  WorkbenchItemMutationResponse,
-  WorkbenchItemSaveRequest,
-  WorkbenchPreviewResponse,
+import {
+  getFindingDefinition,
+  getFixActionDefinition,
+  type ApiErrorResponse,
+  type BackupCheckpoint,
+  type BackupCheckpointCreateRequest,
+  type BackupCheckpointResponse,
+  type ConnectionProfile,
+  type ConnectionResult,
+  type Finding,
+  type FindingAdvisory,
+  type FindingKind,
+  type FindingTreatment,
+  type FindingSeverity,
+  type FixAction,
+  type FixApplyRequest,
+  type FixApplyResponse,
+  type FixPreviewInput,
+  type FixQueueEntry,
+  type FixQueueStatus,
+  type FixPreviewRequest,
+  type FixPreviewResponse,
+  type FixSelection,
+  type InventoryGraph,
+  type ProviderKind,
+  type ProfileDeleteResponse,
+  type SavedConnectionProfile,
+  type ScanCreateRequest,
+  type ScanDetail,
+  type ScanDiffSummary,
+  type ScanExportBundle,
+  type ScanHistoryEntry,
+  type ScanMode,
+  type ScanRun,
+  type ScanWorkbench,
+  type ScanWorkbenchResponse,
+  type WorkbenchApplyRequest,
+  type WorkbenchApplyResponse,
+  type WorkbenchEntry,
+  type WorkbenchEntryStatus,
+  type WorkbenchItemDeleteResponse,
+  type WorkbenchItemMutationResponse,
+  type WorkbenchItemSaveRequest,
+  type WorkbenchPreviewResponse,
 } from '@ha-repair/contracts';
 import {
   collectMockInventory,
@@ -797,8 +799,50 @@ function formatCommandPayload(
   return JSON.stringify(payload, null, 2);
 }
 
+function formatFixInputValue(
+  value: string | string[] | null | undefined,
+  emptyLabel: string,
+): string {
+  if (value === undefined) {
+    return emptyLabel;
+  }
+
+  if (value === null) {
+    return 'null';
+  }
+
+  if (Array.isArray(value)) {
+    return JSON.stringify(value);
+  }
+
+  return value;
+}
+
+function hasProvidedFixInputValue(input: FixAction['requiredInputs'][number]) {
+  if (input.field === 'assistant_exposures') {
+    return input.providedValue !== undefined;
+  }
+
+  return (
+    typeof input.providedValue === 'string' && input.providedValue.length > 0
+  );
+}
+
+function formatFindingDefinitionLines(finding: Finding): string[] {
+  const definition = getFindingDefinition(finding.kind);
+
+  return [
+    `- Definition: ${definition.definition}`,
+    `- Why it matters: ${definition.whyItMatters}`,
+    `- Recommended next step: ${definition.operatorGuidance}`,
+  ];
+}
+
 // eslint-disable-next-line complexity
 export function renderScanExportMarkdown(bundle: ScanExportBundle): string {
+  const findingById = new Map(
+    bundle.findings.map((finding) => [finding.id, finding] as const),
+  );
   const lines = [
     '# Home Assistant Repair Report',
     '',
@@ -903,6 +947,7 @@ export function renderScanExportMarkdown(bundle: ScanExportBundle): string {
         `- ID: ${finding.id}`,
         `- Kind: ${finding.kind}`,
         `- Severity: ${finding.severity}`,
+        ...formatFindingDefinitionLines(finding),
         `- Evidence: ${finding.evidence}`,
         formatLineItemList('Objects', finding.objectIds),
         '',
@@ -916,12 +961,16 @@ export function renderScanExportMarkdown(bundle: ScanExportBundle): string {
     lines.push('No fix actions generated for this scan.');
   } else {
     for (const action of bundle.actions) {
+      const actionDefinition = getFixActionDefinition(action.kind);
+
       lines.push(
         '',
         `### ${action.title}`,
         `- Action ID: ${action.id}`,
         `- Finding ID: ${action.findingId}`,
         `- Kind: ${action.kind}`,
+        `- Definition: ${actionDefinition.definition}`,
+        `- Review focus: ${actionDefinition.reviewFocus}`,
         `- Risk: ${action.risk}`,
         `- Intent: ${action.intent}`,
         `- Rationale: ${action.rationale}`,
@@ -942,7 +991,7 @@ export function renderScanExportMarkdown(bundle: ScanExportBundle): string {
             'Required inputs',
             action.requiredInputs.map(
               (input) =>
-                `${input.summary} (field: ${input.field}, current: ${input.currentValue ?? 'null'}, recommended: ${input.recommendedValue ?? 'None'}, provided: ${input.providedValue ?? 'Missing'})`,
+                `${input.summary} (field: ${input.field}, current: ${formatFixInputValue(input.currentValue, 'null')}, recommended: ${formatFixInputValue(input.recommendedValue, 'None')}, provided: ${formatFixInputValue(input.providedValue, 'Missing')})`,
             ),
           ),
         );
@@ -982,10 +1031,13 @@ export function renderScanExportMarkdown(bundle: ScanExportBundle): string {
   }
 
   for (const advisory of bundle.advisories) {
+    const finding = findingById.get(advisory.findingId);
+
     lines.push(
       '',
       `### ${advisory.title}`,
       `- Finding ID: ${advisory.findingId}`,
+      ...(finding ? formatFindingDefinitionLines(finding) : []),
       `- Summary: ${advisory.summary}`,
       `- Rationale: ${advisory.rationale}`,
       formatLineItemList(
@@ -1003,7 +1055,7 @@ export function renderScanExportMarkdown(bundle: ScanExportBundle): string {
 function getIncompleteRequiredInputs(actions: FixAction[]) {
   return actions.flatMap((action) =>
     action.requiredInputs
-      .filter((input) => !input.providedValue)
+      .filter((input) => !hasProvidedFixInputValue(input))
       .map((input) => ({action, input})),
   );
 }

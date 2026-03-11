@@ -58,6 +58,30 @@ const railGroupLabels: Record<RailGroupKey, string> = {
   staged: 'Staged batch',
 };
 
+function getActionablePriority(record: WorkbenchFindingRecord): number {
+  if (record.treatment !== 'actionable') {
+    return 99;
+  }
+
+  switch (record.finding.kind) {
+    case 'stale_entity': {
+      return 0;
+    }
+
+    case 'duplicate_name': {
+      return 1;
+    }
+
+    case 'assistant_context_bloat': {
+      return 2;
+    }
+
+    default: {
+      return 3;
+    }
+  }
+}
+
 function getSeverityRank(severity: FindingSeverity): number {
   switch (severity) {
     case 'high': {
@@ -102,6 +126,13 @@ function sortRecords(
     if (leftUpdatedAt !== rightUpdatedAt) {
       return rightUpdatedAt.localeCompare(leftUpdatedAt);
     }
+  }
+
+  const actionablePriorityDelta =
+    getActionablePriority(left) - getActionablePriority(right);
+
+  if (actionablePriorityDelta !== 0) {
+    return actionablePriorityDelta;
   }
 
   const severityDelta =

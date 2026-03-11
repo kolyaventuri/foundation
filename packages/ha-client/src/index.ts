@@ -2,6 +2,8 @@ import {mkdirSync, writeFileSync} from 'node:fs';
 import {resolve as resolvePath} from 'node:path';
 import process from 'node:process';
 import type {
+  AssistantExposureBinding,
+  AssistantKind,
   BackupCheckpoint,
   CapabilitySet,
   ConnectionProfile,
@@ -226,20 +228,28 @@ function asStringArray(value: unknown): string[] {
   return value.filter((entry): entry is string => typeof entry === 'string');
 }
 
-function extractAssistantExposures(
+function extractAssistantExposureDetails(
   entityRegistryRecord: EntityRegistryRecord | undefined,
-): Array<'assist' | 'alexa' | 'homekit'> {
+): {
+  bindings: Partial<Record<AssistantKind, AssistantExposureBinding>>;
+  exposures: AssistantKind[];
+} {
   if (!entityRegistryRecord?.options) {
-    return [];
+    return {
+      bindings: {},
+      exposures: [],
+    };
   }
 
-  const exposures: Array<'assist' | 'alexa' | 'homekit'> = [];
+  const bindings: Partial<Record<AssistantKind, AssistantExposureBinding>> = {};
+  const exposures: AssistantKind[] = [];
   const options = entityRegistryRecord.options;
   const knownOptions = [
     ['assist', ['conversation', 'assist']],
     ['alexa', ['alexa']],
     ['homekit', ['homekit']],
   ] as const;
+  const knownFlagKeys = ['should_expose', 'expose', 'enabled'] as const;
 
   for (const [assistant, paths] of knownOptions) {
     for (const key of paths) {
@@ -249,19 +259,29 @@ function extractAssistantExposures(
         continue;
       }
 
-      const isExposed =
-        section.should_expose === true ||
-        section.expose === true ||
-        section.enabled === true;
+      const flagKey =
+        knownFlagKeys.find(
+          (candidate) => typeof section[candidate] === 'boolean',
+        ) ?? 'should_expose';
+      const isExposed = section[flagKey] === true;
+
+      bindings[assistant] = {
+        flagKey,
+        optionKey: key,
+      };
 
       if (isExposed) {
         exposures.push(assistant);
-        break;
       }
+
+      break;
     }
   }
 
-  return exposures;
+  return {
+    bindings,
+    exposures,
+  };
 }
 
 function findFriendlyName(
@@ -333,6 +353,16 @@ export function collectMockInventory(): InventoryGraph {
     ],
     entities: [
       {
+        assistantExposureBindings: {
+          alexa: {
+            flagKey: 'should_expose',
+            optionKey: 'alexa',
+          },
+          homekit: {
+            flagKey: 'should_expose',
+            optionKey: 'homekit',
+          },
+        },
         assistantExposures: ['alexa', 'homekit'],
         deviceId: 'device.living_room_lamp',
         disabledBy: null,
@@ -344,7 +374,14 @@ export function collectMockInventory(): InventoryGraph {
         state: 'on',
       },
       {
+        assistantExposureBindings: {
+          assist: {
+            flagKey: 'enabled',
+            optionKey: 'conversation',
+          },
+        },
         assistantExposures: ['assist'],
+        deviceId: 'device.living_room_lamp',
         disabledBy: null,
         displayName: 'Living Room Lamp',
         entityId: 'sensor.living_room_lamp_power',
@@ -353,6 +390,12 @@ export function collectMockInventory(): InventoryGraph {
         state: 'unavailable',
       },
       {
+        assistantExposureBindings: {
+          assist: {
+            flagKey: 'enabled',
+            optionKey: 'conversation',
+          },
+        },
         assistantExposures: ['assist'],
         deviceId: 'device.missing',
         disabledBy: null,
@@ -655,10 +698,12 @@ function buildInventoryFromLiveData(input: {
       const device = registry?.device_id
         ? deviceById.get(registry.device_id)
         : undefined;
+      const exposureDetails = extractAssistantExposureDetails(registry);
 
       return {
         areaId: registry?.area_id ?? device?.area_id ?? null,
-        assistantExposures: extractAssistantExposures(registry),
+        assistantExposureBindings: exposureDetails.bindings,
+        assistantExposures: exposureDetails.exposures,
         deviceId: registry?.device_id ?? null,
         disabledBy: registry?.disabled_by ?? null,
         displayName:

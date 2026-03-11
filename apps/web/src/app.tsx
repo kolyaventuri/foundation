@@ -1,10 +1,14 @@
 import {
   type ApiErrorResponse,
+  type AssistantKind,
   createFrameworkSummary,
   type BackupCheckpointResponse,
   type Finding,
   type FindingKind,
   type FindingSeverity,
+  getFindingActionKind,
+  getFindingDefinition,
+  getFixActionDefinition,
   type ProfileListResponse,
   type FixApplyResponse,
   type FixPreviewInput,
@@ -95,6 +99,49 @@ const statusToneClasses = {
   ready: 'border-success/20 bg-success/15 text-success',
   running: 'border-ink-strong/10 bg-ink-strong/8 text-ink-soft',
 } as const;
+
+const findingKindFilterOptions = [
+  {
+    label: getFindingDefinition('assistant_context_bloat').label,
+    value: 'assistant_context_bloat',
+  },
+  {
+    label: getFindingDefinition('automation_invalid_target').label,
+    value: 'automation_invalid_target',
+  },
+  {
+    label: getFindingDefinition('dangling_label_reference').label,
+    value: 'dangling_label_reference',
+  },
+  {
+    label: getFindingDefinition('duplicate_name').label,
+    value: 'duplicate_name',
+  },
+  {
+    label: getFindingDefinition('missing_area_assignment').label,
+    value: 'missing_area_assignment',
+  },
+  {
+    label: getFindingDefinition('missing_floor_assignment').label,
+    value: 'missing_floor_assignment',
+  },
+  {
+    label: getFindingDefinition('scene_invalid_target').label,
+    value: 'scene_invalid_target',
+  },
+  {
+    label: getFindingDefinition('shared_label_observation').label,
+    value: 'shared_label_observation',
+  },
+  {
+    label: getFindingDefinition('stale_entity').label,
+    value: 'stale_entity',
+  },
+  {
+    label: getFindingDefinition('orphaned_entity_device').label,
+    value: 'orphaned_entity_device',
+  },
+] satisfies Array<{label: string; value: Exclude<RailFilters['kind'], 'all'>}>;
 
 async function fetchJson<T>(
   input: RequestInfo,
@@ -254,23 +301,66 @@ function getFindingDraftInputs(
   return drafts[findingId] ?? entry?.savedInputs ?? [];
 }
 
-function getInputValue(
+function getNameInputValue(
   inputs: FixPreviewInput[],
   findingId: string,
   targetId: string,
 ): string {
-  return (
-    inputs.find(
-      (input) => input.findingId === findingId && input.targetId === targetId,
-    )?.value ?? ''
+  const input = inputs.find(
+    (candidate) =>
+      candidate.findingId === findingId &&
+      candidate.targetId === targetId &&
+      candidate.field === 'name',
   );
+
+  return input?.field === 'name' ? input.value : '';
+}
+
+function getAssistantExposureInputValue(
+  inputs: FixPreviewInput[],
+  findingId: string,
+  targetId: string,
+): AssistantKind[] | undefined {
+  const input = inputs.find(
+    (candidate) =>
+      candidate.findingId === findingId &&
+      candidate.targetId === targetId &&
+      candidate.field === 'assistant_exposures',
+  );
+
+  return input?.field === 'assistant_exposures' ? input.value : undefined;
+}
+
+function normalizeAssistantExposureSelection(
+  value: AssistantKind[],
+): AssistantKind[] {
+  return [...new Set(value)].sort();
+}
+
+function areAssistantExposureSelectionsEqual(
+  left: AssistantKind[],
+  right: AssistantKind[],
+): boolean {
+  return (
+    left.length === right.length &&
+    left.every((assistant, index) => assistant === right[index])
+  );
+}
+
+function isAssistantKind(value: string): value is AssistantKind {
+  return value === 'assist' || value === 'alexa' || value === 'homekit';
+}
+
+function getAssistantExposureTargets(finding: Finding): AssistantKind[] {
+  return finding.objectIds
+    .filter((objectId) => isAssistantKind(objectId))
+    .sort();
 }
 
 function upsertDraftInput(
   currentInputs: FixPreviewInput[],
   nextInput: FixPreviewInput,
 ): FixPreviewInput[] {
-  const trimmedValue = nextInput.value.trim();
   const filteredInputs = currentInputs.filter(
     (input) =>
       !(
@@ -280,15 +370,31 @@ function upsertDraftInput(
       ),
   );
 
-  if (trimmedValue.length === 0) {
-    return filteredInputs;
+  if (nextInput.field === 'name') {
+    const trimmedValue = nextInput.value.trim();
+
+    if (trimmedValue.length === 0) {
+      return filteredInputs;
+    }
+
+    return [...filteredInputs, {...nextInput, value: trimmedValue}].sort(
+      (left, right) =>
+        `${left.targetId}:${left.field}`.localeCompare(
+          `${right.targetId}:${right.field}`,
+        ),
+    );
   }
 
-  return [...filteredInputs, {...nextInput, value: trimmedValue}].sort(
-    (left, right) =>
-      `${left.targetId}:${left.field}`.localeCompare(
-        `${right.targetId}:${right.field}`,
-      ),
+  return [
+    ...filteredInputs,
+    {
+      ...nextInput,
+      value: normalizeAssistantExposureSelection(nextInput.value),
+    },
+  ].sort((left, right) =>
+    `${left.targetId}:${left.field}`.localeCompare(
+      `${right.targetId}:${right.field}`,
+    ),
   );
 }
 
@@ -304,11 +410,50 @@ function canStageFinding(
   if (finding.kind === 'duplicate_name') {
     return finding.objectIds.every(
       (entityId) =>
-        getInputValue(inputs, finding.id, entityId).trim().length > 0,
+        getNameInputValue(inputs, finding.id, entityId).trim().length > 0,
+    );
+  }
+
+  if (finding.kind === 'assistant_context_bloat') {
+    const entityId = finding.objectIds[0];
+    const currentSelection = normalizeAssistantExposureSelection(
+      getAssistantExposureTargets(finding),
+    );
+    const draftedSelection = entityId
+      ? getAssistantExposureInputValue(inputs, finding.id, entityId)
+      : undefined;
+
+    return (
+      draftedSelection !== undefined &&
+      !areAssistantExposureSelectionsEqual(
+        currentSelection,
+        normalizeAssistantExposureSelection(draftedSelection),
+      )
     );
   }
 
   return true;
+}
+
+function getFindingInputStatusSummary(
+  finding: Finding,
+  inputs: FixPreviewInput[],
+): string {
+  if (finding.kind === 'duplicate_name') {
+    return `${inputs.length} value(s) drafted for ${finding.objectIds.length} required target(s).`;
+  }
+
+  if (finding.kind === 'assistant_context_bloat') {
+    return getAssistantExposureInputValue(
+      inputs,
+      finding.id,
+      finding.objectIds[0] ?? '',
+    ) === undefined
+      ? 'Choose the assistant surfaces to keep before staging this finding.'
+      : 'The reviewed assistant keep-set is ready to stage when it differs from the current exposure set.';
+  }
+
+  return 'No operator input is required for this finding kind.';
 }
 
 function findEntity(scan: ScanDetail, entityId: string) {
@@ -731,19 +876,13 @@ export function App() {
     }
   }
 
-  function updateDraftInput(
-    findingId: string,
-    targetId: string,
-    value: string,
-  ) {
+  function updateDraftInput(nextInput: FixPreviewInput) {
     setDraftInputsByFindingId((current) => ({
       ...current,
-      [findingId]: upsertDraftInput(current[findingId] ?? [], {
-        field: 'name',
-        findingId,
-        targetId,
-        value,
-      }),
+      [nextInput.findingId]: upsertDraftInput(
+        current[nextInput.findingId] ?? [],
+        nextInput,
+      ),
     }));
   }
 
@@ -1187,19 +1326,11 @@ export function App() {
                         value={filters.kind}
                       >
                         <option value="all">All kinds</option>
-                        <option value="assistant_context_bloat">
-                          Assistant
-                        </option>
-                        <option value="automation_invalid_target">
-                          Automation
-                        </option>
-                        <option value="dangling_label_reference">Labels</option>
-                        <option value="duplicate_name">Rename</option>
-                        <option value="missing_area_assignment">Areas</option>
-                        <option value="missing_floor_assignment">Floors</option>
-                        <option value="scene_invalid_target">Scenes</option>
-                        <option value="stale_entity">Stale</option>
-                        <option value="orphaned_entity_device">Manual</option>
+                        {findingKindFilterOptions.map((option) => (
+                          <option key={option.value} value={option.value}>
+                            {option.label}
+                          </option>
+                        ))}
                       </select>
                       <select
                         className="rounded-full border border-black/10 bg-white px-3 py-2 text-sm text-ink-strong outline-none transition focus:border-accent/35"
@@ -1780,6 +1911,99 @@ function RailRow({
   );
 }
 
+function FindingDefinitionCard({activeFinding}: {activeFinding: Finding}) {
+  const definition = getFindingDefinition(activeFinding.kind);
+
+  return (
+    <section className="rounded-[1.2rem] border border-black/8 bg-white/72 p-4">
+      <p className="text-xs uppercase tracking-[0.16em] text-ink-soft">
+        Definition
+      </p>
+      <p className="mt-3 text-sm leading-6 text-ink-soft">
+        {definition.definition}
+      </p>
+      <p className="mt-3 text-sm leading-6 text-ink-soft">
+        <span className="font-semibold text-ink-strong">Why it matters:</span>{' '}
+        {definition.whyItMatters}
+      </p>
+    </section>
+  );
+}
+
+function FindingActionEditor({
+  activeFinding,
+  activeInputs,
+  onUpdateDraftInput,
+  selectedScan,
+}: {
+  activeFinding: Finding;
+  activeInputs: FixPreviewInput[];
+  onUpdateDraftInput: (nextInput: FixPreviewInput) => void;
+  selectedScan: ScanDetail;
+}) {
+  switch (activeFinding.kind) {
+    case 'duplicate_name': {
+      return (
+        <DuplicateNameEditor
+          activeFinding={activeFinding}
+          activeInputs={activeInputs}
+          onUpdateDraftInput={onUpdateDraftInput}
+          selectedScan={selectedScan}
+        />
+      );
+    }
+
+    case 'assistant_context_bloat': {
+      return (
+        <AssistantExposureEditor
+          activeFinding={activeFinding}
+          activeInputs={activeInputs}
+          onUpdateDraftInput={onUpdateDraftInput}
+        />
+      );
+    }
+
+    default: {
+      return null;
+    }
+  }
+}
+
+function FindingGuidanceCard({
+  activeEntry,
+  activeFinding,
+}: {
+  activeEntry: WorkbenchEntry;
+  activeFinding: Finding;
+}) {
+  const findingDefinition = getFindingDefinition(activeFinding.kind);
+  const actionKind = getFindingActionKind(activeFinding.kind);
+  const actionDefinition =
+    actionKind === undefined ? undefined : getFixActionDefinition(actionKind);
+  const isActionable = activeEntry.treatment === 'actionable';
+
+  return (
+    <section className="rounded-[1.2rem] border border-black/8 bg-white/72 p-4">
+      <p className="text-xs uppercase tracking-[0.16em] text-ink-soft">
+        {isActionable ? 'Planned change' : 'Operator review'}
+      </p>
+      <p className="mt-3 text-sm leading-6 text-ink-soft">
+        {isActionable && actionDefinition
+          ? actionDefinition.definition
+          : 'This finding stays advisory because it still needs operator judgement or a manual Home Assistant repair.'}
+      </p>
+      <p className="mt-3 text-sm leading-6 text-ink-soft">
+        <span className="font-semibold text-ink-strong">
+          {isActionable ? 'Review focus:' : 'Next step:'}
+        </span>{' '}
+        {isActionable && actionDefinition
+          ? actionDefinition.reviewFocus
+          : findingDefinition.operatorGuidance}
+      </p>
+    </section>
+  );
+}
+
 function FindingEditorPanel({
   activeEntry,
   activeFinding,
@@ -1812,11 +2036,7 @@ function FindingEditorPanel({
   onNextRecommended: () => void;
   onRemove: () => void;
   onSave: () => void;
-  onUpdateDraftInput: (
-    findingId: string,
-    targetId: string,
-    value: string,
-  ) => void;
+  onUpdateDraftInput: (nextInput: FixPreviewInput) => void;
   selectedScan: ScanDetail | undefined;
   stagedCount: number;
   workbench: ScanWorkbench | undefined;
@@ -1950,37 +2170,17 @@ function FindingEditorPanel({
               </p>
             </section>
 
-            {activeFinding.kind === 'duplicate_name' ? (
-              <DuplicateNameEditor
-                activeFinding={activeFinding}
-                activeInputs={activeInputs}
-                onUpdateDraftInput={onUpdateDraftInput}
-                selectedScan={selectedScan}
-              />
-            ) : activeFinding.kind === 'stale_entity' ? (
-              <section className="rounded-[1.2rem] border border-black/8 bg-white/72 p-4">
-                <p className="text-xs uppercase tracking-[0.16em] text-ink-soft">
-                  Planned change
-                </p>
-                <p className="mt-3 text-sm leading-6 text-ink-soft">
-                  This finding stages a single entity registry update that sets
-                  <code className="mx-1">disabled_by</code>
-                  to <code>user</code>. No additional operator input is
-                  required.
-                </p>
-              </section>
-            ) : (
-              <section className="rounded-[1.2rem] border border-black/8 bg-white/72 p-4">
-                <p className="text-xs uppercase tracking-[0.16em] text-ink-soft">
-                  Manual guidance
-                </p>
-                <p className="mt-3 text-sm leading-6 text-ink-soft">
-                  This finding is advisory-only. Inspect the missing
-                  relationship, fix it in Home Assistant, then rerun the scan to
-                  confirm it resolves.
-                </p>
-              </section>
-            )}
+            <FindingDefinitionCard activeFinding={activeFinding} />
+            <FindingActionEditor
+              activeFinding={activeFinding}
+              activeInputs={activeInputs}
+              onUpdateDraftInput={onUpdateDraftInput}
+              selectedScan={selectedScan}
+            />
+            <FindingGuidanceCard
+              activeEntry={activeEntry}
+              activeFinding={activeFinding}
+            />
           </div>
 
           <aside className="min-w-0 space-y-4">
@@ -2000,9 +2200,7 @@ function FindingEditorPanel({
                 Input status
               </p>
               <p className="mt-3 text-sm leading-6 text-ink-soft">
-                {activeFinding.kind === 'duplicate_name'
-                  ? `${activeInputs.length} value(s) drafted for ${activeFinding.objectIds.length} required target(s).`
-                  : 'No operator input is required for this finding kind.'}
+                {getFindingInputStatusSummary(activeFinding, activeInputs)}
               </p>
             </article>
 
@@ -2037,11 +2235,7 @@ function DuplicateNameEditor({
 }: {
   activeFinding: Finding;
   activeInputs: FixPreviewInput[];
-  onUpdateDraftInput: (
-    findingId: string,
-    targetId: string,
-    value: string,
-  ) => void;
+  onUpdateDraftInput: (nextInput: FixPreviewInput) => void;
   selectedScan: ScanDetail;
 }) {
   return (
@@ -2114,15 +2308,16 @@ function DuplicateNameEditor({
                 <input
                   className="mt-1 w-full min-w-0 rounded-full border border-black/10 bg-white px-4 py-2 text-sm text-ink-strong outline-none transition focus:border-accent/35"
                   onChange={(event) => {
-                    onUpdateDraftInput(
-                      activeFinding.id,
-                      entityId,
-                      event.target.value,
-                    );
+                    onUpdateDraftInput({
+                      field: 'name',
+                      findingId: activeFinding.id,
+                      targetId: entityId,
+                      value: event.target.value,
+                    });
                   }}
                   placeholder={recommendation}
                   type="text"
-                  value={getInputValue(
+                  value={getNameInputValue(
                     activeInputs,
                     activeFinding.id,
                     entityId,
@@ -2132,6 +2327,86 @@ function DuplicateNameEditor({
             </div>
           );
         })}
+      </div>
+    </section>
+  );
+}
+
+function AssistantExposureEditor({
+  activeFinding,
+  activeInputs,
+  onUpdateDraftInput,
+}: {
+  activeFinding: Finding;
+  activeInputs: FixPreviewInput[];
+  onUpdateDraftInput: (nextInput: FixPreviewInput) => void;
+}) {
+  const entityId = activeFinding.objectIds[0] ?? '';
+  const currentExposures = getAssistantExposureTargets(activeFinding);
+  const draftedSelection =
+    getAssistantExposureInputValue(activeInputs, activeFinding.id, entityId) ??
+    currentExposures;
+
+  return (
+    <section className="rounded-[1.2rem] border border-black/8 bg-white/72 p-4">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <h3 className="font-semibold text-ink-strong">
+            Assistant exposure review
+          </h3>
+          <p className="mt-2 text-sm leading-6 text-ink-soft">
+            Choose which existing assistant surfaces should keep exposing this
+            entity.
+          </p>
+        </div>
+        <span className="rounded-full border border-black/10 bg-ink-strong/5 px-3 py-2 text-xs font-semibold tracking-[0.16em] text-ink-soft uppercase">
+          {currentExposures.length} surfaces
+        </span>
+      </div>
+
+      <div className="mt-4 rounded-[0.95rem] border border-black/8 bg-ink-strong/3 p-4">
+        <p className="text-[0.68rem] uppercase tracking-[0.16em] text-ink-soft">
+          Current assistant exposures
+        </p>
+        <p className="mt-2 text-sm text-ink-soft">
+          {currentExposures.length === 0
+            ? 'No assistant surfaces are currently exposed.'
+            : currentExposures.join(', ')}
+        </p>
+
+        <div className="mt-4 grid gap-2 sm:grid-cols-3">
+          {currentExposures.map((assistant) => {
+            const checked = draftedSelection.includes(assistant);
+
+            return (
+              <label
+                className="flex items-center gap-3 rounded-full border border-black/10 bg-white px-4 py-3 text-sm text-ink-strong"
+                key={assistant}
+              >
+                <input
+                  checked={checked}
+                  className="h-4 w-4 rounded border-black/15 text-accent focus:ring-accent/30"
+                  onChange={(event) => {
+                    const nextSelection = event.target.checked
+                      ? [...draftedSelection, assistant]
+                      : draftedSelection.filter(
+                          (candidate) => candidate !== assistant,
+                        );
+
+                    onUpdateDraftInput({
+                      field: 'assistant_exposures',
+                      findingId: activeFinding.id,
+                      targetId: entityId,
+                      value: normalizeAssistantExposureSelection(nextSelection),
+                    });
+                  }}
+                  type="checkbox"
+                />
+                <span className="font-medium capitalize">{assistant}</span>
+              </label>
+            );
+          })}
+        </div>
       </div>
     </section>
   );
