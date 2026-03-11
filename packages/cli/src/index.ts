@@ -1,8 +1,8 @@
 import process from 'node:process';
 import {Command} from 'commander';
-import {testConnection} from '@ha-repair/ha-client';
+import {collectMockInventory, testConnection} from '@ha-repair/ha-client';
 import {listProviderDescriptors} from '@ha-repair/llm';
-import {createFrameworkSummary} from '@ha-repair/scan-engine';
+import {createFrameworkSummary, runScan} from '@ha-repair/scan-engine';
 
 const program = new Command();
 const frameworkCommand = program
@@ -11,6 +11,8 @@ const frameworkCommand = program
 const connectCommand = program
   .command('connect')
   .description('Run Home Assistant connection checks');
+
+let latestScan: ReturnType<typeof runScan> | undefined;
 
 program
   .name('ha-repair')
@@ -56,6 +58,47 @@ connectCommand
     });
 
     console.log(JSON.stringify(result, null, 2));
+  });
+
+program
+  .command('scan')
+  .description('Run a baseline deterministic scan against mock inventory')
+  .action(() => {
+    latestScan = runScan(collectMockInventory());
+    console.log(
+      JSON.stringify(
+        {
+          findings: latestScan.findings.length,
+          scanId: latestScan.id,
+          scannedAt: latestScan.createdAt,
+        },
+        null,
+        2,
+      ),
+    );
+  });
+
+program
+  .command('findings [scanId]')
+  .description('Print findings from the latest local scan run')
+  .action((scanId?: string) => {
+    if (!latestScan) {
+      console.error(
+        'No local scan has been run yet. Execute `ha-repair scan` first.',
+      );
+      process.exitCode = 1;
+      return;
+    }
+
+    if (scanId && scanId !== latestScan.id) {
+      console.error(
+        `Unknown local scan id ${scanId}. Latest id is ${latestScan.id}.`,
+      );
+      process.exitCode = 1;
+      return;
+    }
+
+    console.log(JSON.stringify(latestScan.findings, null, 2));
   });
 
 void program.parseAsync(process.argv);

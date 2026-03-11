@@ -12,4 +12,3 @@
     "typecheck": "tsc --project tsconfig.json --noEmit"
   }
 }
-
