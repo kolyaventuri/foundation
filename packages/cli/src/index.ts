@@ -172,8 +172,13 @@ export function buildProgram() {
 
   connectCommand
     .command('test')
-    .description('Run the current mocked Home Assistant connection check')
+    .description('Run a Home Assistant connection check')
     .option('--config-path <path>', 'Optional Home Assistant config path')
+    .addOption(
+      new Option('--mode <mode>', 'Connection test mode')
+        .choices(['mock', 'live'])
+        .default('mock'),
+    )
     .option('--profile <name>', 'Saved connection profile name')
     .option('--token <token>', 'Long-lived access token')
     .option('--url <url>', 'Base Home Assistant URL')
@@ -181,6 +186,7 @@ export function buildProgram() {
       async (
         options: {
           configPath?: string;
+          mode: 'mock' | 'live';
           profile?: string;
           token?: string;
           url?: string;
@@ -190,7 +196,9 @@ export function buildProgram() {
         try {
           if (options.profile) {
             const result = await withService(command, async (service) =>
-              service.testSavedProfile(options.profile!),
+              service.testSavedProfile(options.profile!, {
+                mode: options.mode,
+              }),
             );
             printJson(result);
             return;
@@ -211,6 +219,9 @@ export function buildProgram() {
                 url: options.url!,
                 ...(options.configPath ? {configPath: options.configPath} : {}),
               }),
+              {
+                mode: options.mode,
+              },
             ),
           );
           printJson(result);

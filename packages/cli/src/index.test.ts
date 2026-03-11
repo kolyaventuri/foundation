@@ -4,6 +4,7 @@ import {join} from 'node:path';
 import process from 'node:process';
 import type {FixApplyResponse, FixPreviewResponse} from '@ha-repair/contracts';
 import {afterEach, describe, expect, it} from 'vitest';
+import {createLiveHomeAssistantMocks} from '../../../test/live-home-assistant';
 import {buildProgram} from './index';
 
 const temporaryDirectories: string[] = [];
@@ -60,6 +61,27 @@ afterEach(() => {
     });
   }
 });
+
+async function withLiveHomeAssistantGlobals<T>(callback: () => Promise<T>) {
+  const mocks = createLiveHomeAssistantMocks();
+  const originalFetch = globalThis.fetch;
+  const originalWebSocket = globalThis.WebSocket;
+
+  globalThis.fetch = mocks.fetch;
+  globalThis.WebSocket = mocks.WebSocketCtor as unknown as typeof WebSocket;
+
+  try {
+    return await callback();
+  } finally {
+    globalThis.fetch = originalFetch;
+
+    if (originalWebSocket) {
+      globalThis.WebSocket = originalWebSocket;
+    } else {
+      Reflect.deleteProperty(globalThis, 'WebSocket');
+    }
+  }
+}
 
 describe('cli', () => {
   it('supports saved profiles, reviewed previews, dry-run apply, and markdown/json exports', async () => {
@@ -118,6 +140,18 @@ describe('cli', () => {
     );
     expect(testResult.exitCode).toBe(0);
     expect(JSON.parse(testResult.stdout)).toMatchObject({
+      ok: true,
+    });
+
+    const liveTestResult = await withLiveHomeAssistantGlobals(async () =>
+      runCliCommand(
+        ['connect', 'test', '--profile', 'primary', '--mode', 'live'],
+        dbPath,
+      ),
+    );
+    expect(liveTestResult.exitCode).toBe(0);
+    expect(JSON.parse(liveTestResult.stdout)).toMatchObject({
+      mode: 'live',
       ok: true,
     });
 

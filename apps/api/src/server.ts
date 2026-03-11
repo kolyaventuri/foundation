@@ -5,6 +5,7 @@ import type {
   BackupCheckpointCreateRequest,
   BackupCheckpointResponse,
   ConnectionProfile,
+  ConnectionTestRequest,
   ConnectionTestResponse,
   FixApplyRequest,
   FixApplyResponse,
@@ -95,12 +96,15 @@ export async function createServer(options: RepairServiceOptions = {}) {
     return response;
   });
 
-  server.post<{Body: Partial<ConnectionProfile>}>(
+  server.post<{Body: ConnectionTestRequest}>(
     '/api/profiles/test',
     async (request) => {
       const response: ConnectionTestResponse = {
         result: await repairService.testInlineProfile(
           buildConnectionProfile(request.body),
+          {
+            mode: request.body?.mode,
+          },
         ),
       };
 
@@ -108,12 +112,15 @@ export async function createServer(options: RepairServiceOptions = {}) {
     },
   );
 
-  server.post<{Body: Partial<ConnectionProfile>}>(
+  server.post<{Body: ConnectionTestRequest}>(
     '/api/connections/test',
     async (request) => {
       const response: ConnectionTestResponse = {
         result: await repairService.testInlineProfile(
           buildConnectionProfile(request.body),
+          {
+            mode: request.body?.mode,
+          },
         ),
       };
 
@@ -175,21 +182,23 @@ export async function createServer(options: RepairServiceOptions = {}) {
     },
   );
 
-  server.post<{Params: {name: string}}>(
-    '/api/profiles/:name/test',
-    async (request, reply) => {
-      try {
-        const response: ConnectionTestResponse = {
-          result: await repairService.testSavedProfile(request.params.name),
-        };
+  server.post<{
+    Body: {mode?: ConnectionTestRequest['mode']};
+    Params: {name: string};
+  }>('/api/profiles/:name/test', async (request, reply) => {
+    try {
+      const response: ConnectionTestResponse = {
+        result: await repairService.testSavedProfile(request.params.name, {
+          mode: request.body?.mode,
+        }),
+      };
 
-        return response;
-      } catch (error) {
-        const [statusCode, payload] = sendErrorResponse(error);
-        return reply.code(statusCode).send(payload);
-      }
-    },
-  );
+      return response;
+    } catch (error) {
+      const [statusCode, payload] = sendErrorResponse(error);
+      return reply.code(statusCode).send(payload);
+    }
+  });
 
   server.post<{Params: {name: string}}>(
     '/api/profiles/:name/default',

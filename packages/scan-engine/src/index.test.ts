@@ -60,6 +60,45 @@ const baselineInventory: InventoryGraph = {
   source: 'mock' as const,
 };
 
+const floorCoverageInventory: InventoryGraph = {
+  ...baselineInventory,
+  devices: [
+    {
+      areaId: 'area.kitchen',
+      deviceId: 'device.kitchen_light',
+      floorId: 'floor.main',
+      name: 'Kitchen Light',
+    },
+  ],
+  entities: [
+    {
+      areaId: 'area.kitchen',
+      deviceId: 'device.kitchen_light',
+      disabledBy: null,
+      displayName: 'Kitchen Light',
+      entityId: 'light.kitchen_light',
+      floorId: null,
+      isStale: false,
+      name: null,
+    },
+    {
+      areaId: 'area.utility',
+      disabledBy: null,
+      displayName: 'Utility Sensor',
+      entityId: 'sensor.utility_temperature',
+      floorId: null,
+      isStale: false,
+      name: null,
+    },
+  ],
+  floors: [
+    {
+      floorId: 'floor.main',
+      name: 'Main Floor',
+    },
+  ],
+};
+
 describe('scan-engine', () => {
   it('describes the initial scaffold surfaces', () => {
     const summary = createFrameworkSummary();
@@ -141,6 +180,34 @@ describe('scan-engine', () => {
       expect.arrayContaining([
         expect.objectContaining({
           findingId: 'orphaned_entity_device:switch.orphaned_fan',
+        }),
+      ]),
+    );
+  });
+
+  it('adds an explicit advisory floor hygiene finding when floors are configured', () => {
+    const scan = runScan(floorCoverageInventory);
+    const floorFinding = scan.findings.find(
+      (finding) =>
+        finding.id === 'missing_floor_assignment:sensor.utility_temperature',
+    );
+
+    expect(floorFinding).toMatchObject({
+      kind: 'missing_floor_assignment',
+      severity: 'low',
+    });
+
+    const advisories = createFindingAdvisories(
+      floorCoverageInventory,
+      scan.findings,
+    );
+
+    expect(advisories).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          findingId: 'missing_floor_assignment:sensor.utility_temperature',
+          summary:
+            'Assign the entity or its backing device to a floor, then rerun the scan.',
         }),
       ]),
     );

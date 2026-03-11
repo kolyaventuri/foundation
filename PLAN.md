@@ -73,9 +73,6 @@ Core shared types that should remain stable and versioned:
   - additional deterministic findings for area coverage, label hygiene, invalid automation/scene targets, and assistant exposure bloat
   - optional Ollama/OpenAI enrichment that does not change deterministic findings
 - Remaining Phase C follow-up:
-  - expose live mode through the public connection-test CLI/API surfaces
-  - add a floor-specific hygiene rule to match the labels/floors coverage goal explicitly
-  - complete the Phase C test matrix for live discovery, deep config parsing, skipped-check reporting, backup checkpoints, and the new web states
   - do a dedicated performance pass for larger Home Assistant inventories
 
 ### Phase A — Foundation and first vertical slice (complete)
@@ -115,10 +112,7 @@ Deliver the smallest useful end-to-end flow with deterministic value.
    - Additional rule packs cover room coverage, label hygiene, invalid automation/scene targets, and assistant exposure bloat.
    - Ollama/OpenAI enrichment is available as non-authoritative scan metadata.
 2. Remaining
-   - Public connection-test flows still need a live-mode option.
-   - Floor hygiene still needs its own explicit deterministic rule.
    - Performance work for large inventories is still pending.
-   - Test coverage for the new live/deep/backup paths is still incomplete.
 
 ## Implementation notes
 - Workspace shape stays as `apps/web`, `apps/api`, and shared packages (`ha-client`, `scan-engine`, `contracts`, `llm`, `cli`).

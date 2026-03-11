@@ -13,6 +13,7 @@ export type FindingKind =
   | 'dangling_label_reference'
   | 'duplicate_name'
   | 'missing_area_assignment'
+  | 'missing_floor_assignment'
   | 'orphaned_entity_device'
   | 'scene_invalid_target'
   | 'stale_entity';
@@ -71,6 +72,10 @@ export type ConnectionResult = {
   mode: ScanMode;
   ok: boolean;
   warnings: string[];
+};
+
+export type ConnectionTestRequest = Partial<ConnectionProfile> & {
+  mode?: ScanMode;
 };
 
 export type ConnectionTestResponse = {

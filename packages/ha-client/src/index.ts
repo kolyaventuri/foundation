@@ -729,7 +729,7 @@ function findStringByKeys(
   const record = asRecord(value);
 
   if (!record) {
-    return typeof value === 'string' ? value : undefined;
+    return undefined;
   }
 
   for (const [key, nestedValue] of Object.entries(record)) {

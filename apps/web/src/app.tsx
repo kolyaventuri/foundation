@@ -1032,6 +1032,7 @@ export function App() {
                         <option value="dangling_label_reference">Labels</option>
                         <option value="duplicate_name">Rename</option>
                         <option value="missing_area_assignment">Areas</option>
+                        <option value="missing_floor_assignment">Floors</option>
                         <option value="scene_invalid_target">Scenes</option>
                         <option value="stale_entity">Stale</option>
                         <option value="orphaned_entity_device">Manual</option>

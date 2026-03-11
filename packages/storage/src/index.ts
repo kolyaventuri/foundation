@@ -266,8 +266,12 @@ export type RepairService = {
   setDefaultProfile: (name: string) => Promise<SavedConnectionProfile>;
   testInlineProfile: (
     profile: Partial<ConnectionProfile>,
+    options?: {mode?: ScanMode},
   ) => Promise<ConnectionResult>;
-  testSavedProfile: (name: string) => Promise<ConnectionResult>;
+  testSavedProfile: (
+    name: string,
+    options?: {mode?: ScanMode},
+  ) => Promise<ConnectionResult>;
   applyFixes: (request: FixApplyRequest) => Promise<FixApplyResponse>;
 };
 
@@ -2183,18 +2187,24 @@ export async function createRepairService(
     return getProfile(normalizedName);
   }
 
-  async function testInlineProfile(profile: Partial<ConnectionProfile>) {
-    return testConnection(normalizeInlineProfile(profile));
+  async function testInlineProfile(
+    profile: Partial<ConnectionProfile>,
+    options: {mode?: ScanMode} = {},
+  ) {
+    return testConnection(normalizeInlineProfile(profile), options);
   }
 
-  async function testSavedProfile(name: string) {
+  async function testSavedProfile(
+    name: string,
+    options: {mode?: ScanMode} = {},
+  ) {
     const normalizedName = requireValue(
       name,
       'profile_name_required',
       'Profile name',
     );
     const profile = await requireProfileRow(normalizedName);
-    return testConnection(toConnectionProfile(profile));
+    return testConnection(toConnectionProfile(profile), options);
   }
 
   return {

@@ -4,6 +4,7 @@ import {join} from 'node:path';
 import {afterEach, describe, expect, it} from 'vitest';
 import type {FastifyInstance} from 'fastify';
 import type {
+  BackupCheckpointResponse,
   ConnectionTestResponse,
   FixApplyResponse,
   FixPreviewResponse,
@@ -20,6 +21,7 @@ import type {
   WorkbenchItemMutationResponse,
   WorkbenchPreviewResponse,
 } from '@ha-repair/contracts';
+import {createLiveHomeAssistantMocks} from '../../../test/live-home-assistant';
 import {createServer} from './server';
 
 const temporaryDirectories: string[] = [];
@@ -149,6 +151,27 @@ afterEach(() => {
   }
 });
 
+async function withLiveHomeAssistantGlobals<T>(callback: () => Promise<T>) {
+  const mocks = createLiveHomeAssistantMocks();
+  const originalFetch = globalThis.fetch;
+  const originalWebSocket = globalThis.WebSocket;
+
+  globalThis.fetch = mocks.fetch;
+  globalThis.WebSocket = mocks.WebSocketCtor as unknown as typeof WebSocket;
+
+  try {
+    return await callback();
+  } finally {
+    globalThis.fetch = originalFetch;
+
+    if (originalWebSocket) {
+      globalThis.WebSocket = originalWebSocket;
+    } else {
+      Reflect.deleteProperty(globalThis, 'WebSocket');
+    }
+  }
+}
+
 describe('api server', () => {
   it('tests inline profile connections', async () => {
     const server = await createServer({
@@ -173,6 +196,68 @@ describe('api server', () => {
     } finally {
       await server.close();
     }
+  });
+
+  it('accepts live mode on inline and saved profile connection-test routes', async () => {
+    await withLiveHomeAssistantGlobals(async () => {
+      const server = await createServer({
+        dbPath: createTempDatabasePath(),
+      });
+
+      try {
+        const createProfileResponse = await server.inject({
+          method: 'POST',
+          payload: {
+            baseUrl: 'http://ha.local:8123',
+            name: 'primary',
+            token: 'abc123',
+          },
+          url: '/api/profiles',
+        });
+
+        expect(createProfileResponse.statusCode).toBe(200);
+
+        const inlineResponse = await server.inject({
+          method: 'POST',
+          payload: {
+            baseUrl: 'http://ha.local:8123',
+            mode: 'live',
+            token: 'abc123',
+          },
+          url: '/api/profiles/test',
+        });
+
+        expect(inlineResponse.statusCode).toBe(200);
+        expect(
+          parseJson<ConnectionTestResponse>(inlineResponse.body),
+        ).toMatchObject({
+          result: {
+            mode: 'live',
+            ok: true,
+          },
+        });
+
+        const savedResponse = await server.inject({
+          method: 'POST',
+          payload: {
+            mode: 'live',
+          },
+          url: '/api/profiles/primary/test',
+        });
+
+        expect(savedResponse.statusCode).toBe(200);
+        expect(
+          parseJson<ConnectionTestResponse>(savedResponse.body),
+        ).toMatchObject({
+          result: {
+            mode: 'live',
+            ok: true,
+          },
+        });
+      } finally {
+        await server.close();
+      }
+    });
   });
 
   it('supports persisted profile CRUD with redacted responses', async () => {
@@ -583,6 +668,130 @@ describe('api server', () => {
       });
 
       expect(staleApplyResponse.statusCode).toBe(409);
+    } finally {
+      await server.close();
+    }
+  });
+
+  it('creates and returns persisted backup checkpoints for live scans', async () => {
+    const server = await createServer({
+      backupCheckpointProvider: async ({scanFingerprint}) => ({
+        createdAt: '2026-03-11T12:00:00.000Z',
+        id: 'checkpoint-1',
+        method: 'supervisor',
+        notes: ['Backup checkpoint created and downloaded locally.'],
+        scanFingerprint,
+        status: 'created',
+        summary: 'Backup checkpoint created and downloaded locally.',
+      }),
+      dbPath: createTempDatabasePath(),
+      scanCollector: async () => ({
+        connection: {
+          capabilities: {
+            areaRegistry: {status: 'supported'},
+            automationMetadata: {status: 'supported'},
+            backups: {status: 'supported'},
+            configFiles: {status: 'supported'},
+            deviceRegistry: {status: 'supported'},
+            entityRegistry: {status: 'supported'},
+            exposureControl: {status: 'supported'},
+            floorRegistry: {status: 'supported'},
+            labelRegistry: {status: 'supported'},
+            sceneMetadata: {status: 'supported'},
+          },
+          checkedAt: '2026-03-11T11:59:00.000Z',
+          endpoint: 'http://ha.local:8123',
+          latencyMs: 12,
+          mode: 'live',
+          ok: true,
+          warnings: [],
+        },
+        inventory: {
+          ...baselineInventory,
+          source: 'live',
+        },
+        notes: [],
+        passes: [
+          {
+            completedAt: '2026-03-11T11:59:01.000Z',
+            durationMs: 12,
+            name: 'connection',
+            startedAt: '2026-03-11T11:59:00.000Z',
+            status: 'completed',
+            summary: 'Connected to Home Assistant.',
+          },
+          {
+            completedAt: '2026-03-11T11:59:02.000Z',
+            durationMs: 18,
+            name: 'inventory',
+            startedAt: '2026-03-11T11:59:01.000Z',
+            status: 'completed',
+            summary: 'Loaded live inventory.',
+          },
+          {
+            completedAt: '2026-03-11T11:59:03.000Z',
+            durationMs: 5,
+            name: 'config',
+            startedAt: '2026-03-11T11:59:02.000Z',
+            status: 'skipped',
+            summary: 'Deep config analysis was not requested.',
+          },
+        ],
+      }),
+    });
+
+    try {
+      const createProfileResponse = await server.inject({
+        method: 'POST',
+        payload: {
+          baseUrl: 'http://ha.local:8123',
+          name: 'primary',
+          token: 'abc123',
+        },
+        url: '/api/profiles',
+      });
+
+      expect(createProfileResponse.statusCode).toBe(200);
+
+      const scanResponse = await server.inject({
+        method: 'POST',
+        payload: {
+          mode: 'live',
+          profileName: 'primary',
+        },
+        url: '/api/scans',
+      });
+
+      expect(scanResponse.statusCode).toBe(200);
+      const scan = parseJson<ScanCreateResponse>(scanResponse.body);
+
+      const checkpointCreateResponse = await server.inject({
+        method: 'POST',
+        payload: {
+          download: true,
+        },
+        url: `/api/scans/${scan.scan.id}/backup-checkpoint`,
+      });
+
+      expect(checkpointCreateResponse.statusCode).toBe(200);
+      const createdCheckpoint = parseJson<BackupCheckpointResponse>(
+        checkpointCreateResponse.body,
+      );
+      expect(createdCheckpoint.checkpoint).toMatchObject({
+        id: 'checkpoint-1',
+        scanFingerprint: scan.scan.fingerprint,
+        status: 'created',
+      });
+
+      const checkpointReadResponse = await server.inject({
+        method: 'GET',
+        url: `/api/scans/${scan.scan.id}/backup-checkpoint`,
+      });
+
+      expect(checkpointReadResponse.statusCode).toBe(200);
+      expect(
+        parseJson<BackupCheckpointResponse>(checkpointReadResponse.body),
+      ).toEqual(createdCheckpoint);
     } finally {
       await server.close();
     }

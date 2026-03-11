@@ -81,6 +81,12 @@ export function createFrameworkSummary(): FrameworkSummary {
   };
 }
 
+function indexDevices(inventory: InventoryGraph) {
+  return new Map(
+    inventory.devices.map((device) => [device.deviceId, device] as const),
+  );
+}
+
 function findDuplicateNameFindings(inventory: InventoryGraph): Finding[] {
   const names = new Map<string, string[]>();
 
@@ -137,12 +143,12 @@ function findStaleEntities(inventory: InventoryGraph): Finding[] {
 }
 
 function findMissingAreaAssignments(inventory: InventoryGraph): Finding[] {
+  const devicesById = indexDevices(inventory);
+
   return inventory.entities
     .filter((entity) => {
       const device = entity.deviceId
-        ? inventory.devices.find(
-            (candidate) => candidate.deviceId === entity.deviceId,
-          )
+        ? devicesById.get(entity.deviceId)
         : undefined;
 
       return !entity.areaId && !device?.areaId;
@@ -154,6 +160,31 @@ function findMissingAreaAssignments(inventory: InventoryGraph): Finding[] {
       objectIds: [entity.entityId],
       severity: 'medium',
       title: `Missing area assignment for ${entity.entityId}`,
+    }));
+}
+
+function findMissingFloorAssignments(inventory: InventoryGraph): Finding[] {
+  if (inventory.floors.length === 0) {
+    return [];
+  }
+
+  const devicesById = indexDevices(inventory);
+
+  return inventory.entities
+    .filter((entity) => {
+      const device = entity.deviceId
+        ? devicesById.get(entity.deviceId)
+        : undefined;
+
+      return !entity.floorId && !device?.floorId;
+    })
+    .map((entity) => ({
+      evidence: `Entity ${entity.entityId} has no direct floor assignment and no floor inherited from its device, even though floors are configured in this inventory.`,
+      id: `missing_floor_assignment:${entity.entityId}`,
+      kind: 'missing_floor_assignment',
+      objectIds: [entity.entityId],
+      severity: 'low',
+      title: `Missing floor assignment for ${entity.entityId}`,
     }));
 }
 
@@ -477,6 +508,7 @@ export function createFixActions(
       case 'automation_invalid_target':
       case 'dangling_label_reference':
       case 'missing_area_assignment':
+      case 'missing_floor_assignment':
       case 'orphaned_entity_device':
       case 'scene_invalid_target': {
         return [];
@@ -573,6 +605,25 @@ export function createFindingAdvisories(
             ],
             [
               'Applying the wrong area can distort dashboards, floor plans, and assistant room targeting.',
+            ],
+          ),
+        ];
+      }
+
+      case 'missing_floor_assignment': {
+        return [
+          createGenericAdvisory(
+            inventory,
+            finding,
+            'Floor coverage needs operator judgement because the right level assignment depends on the home layout, multi-story boundaries, and how the entity is surfaced in dashboards.',
+            'Assign the entity or its backing device to a floor, then rerun the scan.',
+            [
+              'Review which floor the entity belongs to physically.',
+              'Assign a floor on the entity or device in Home Assistant.',
+              'Rerun the scan to verify the floor coverage warning clears.',
+            ],
+            [
+              'Applying the wrong floor can distort floor plans, dashboard grouping, and voice targeting across levels.',
             ],
           ),
         ];
@@ -678,6 +729,7 @@ function buildFindings(inventory: InventoryGraph): Finding[] {
     ...findOrphanedDeviceLinks(inventory),
     ...findStaleEntities(inventory),
     ...findMissingAreaAssignments(inventory),
+    ...findMissingFloorAssignments(inventory),
     ...findDanglingLabelReferences(inventory),
     ...findAutomationInvalidTargets(inventory),
     ...findSceneInvalidTargets(inventory),

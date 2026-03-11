@@ -49,6 +49,15 @@ const scan: ScanDetail = {
       severity: 'high',
       title: 'Orphaned entity/device link for switch.orphaned_fan',
     },
+    {
+      evidence:
+        'Entity sensor.attic_temperature has no direct floor assignment.',
+      id: 'missing_floor_assignment:sensor.attic_temperature',
+      kind: 'missing_floor_assignment',
+      objectIds: ['sensor.attic_temperature'],
+      severity: 'low',
+      title: 'Missing floor assignment for sensor.attic_temperature',
+    },
   ],
   enrichment: {
     findingSummaries: [],
@@ -130,6 +139,12 @@ const workbench: ScanWorkbench = {
       status: 'advisory',
       treatment: 'advisory',
     },
+    {
+      findingId: 'missing_floor_assignment:sensor.attic_temperature',
+      savedInputs: [],
+      status: 'advisory',
+      treatment: 'advisory',
+    },
   ],
   isPreviewStale: true,
   scanId: 'scan-1',
@@ -158,7 +173,7 @@ describe('workbench helpers', () => {
     const records = buildWorkbenchFindingRecords(scan, workbench);
     const filtered = filterWorkbenchFindingRecords(records, {
       kind: 'all',
-      query: 'sensor',
+      query: 'kitchen',
       severity: 'all',
       status: 'all',
     });
@@ -183,5 +198,20 @@ describe('workbench helpers', () => {
     expect(visible.totalHeight).toBeGreaterThan(0);
     expect(visible.rows[0]?.type).toBe('group');
     expect(visible.rows.some((row) => row.type === 'finding')).toBe(true);
+  });
+
+  it('filters advisory floor hygiene findings by kind', () => {
+    const records = buildWorkbenchFindingRecords(scan, workbench);
+    const filtered = filterWorkbenchFindingRecords(records, {
+      kind: 'missing_floor_assignment',
+      query: '',
+      severity: 'all',
+      status: 'advisory',
+    });
+
+    expect(filtered).toHaveLength(1);
+    expect(filtered[0]?.finding.id).toBe(
+      'missing_floor_assignment:sensor.attic_temperature',
+    );
   });
 });
