@@ -466,6 +466,7 @@ export type ScanAuditDigest = {
 export type ScanRun = {
   audit?: ScanAuditSummary;
   backupCheckpoint?: BackupCheckpoint;
+  capabilities?: CapabilitySet;
   createdAt: string;
   enrichment: ScanEnrichment;
   findings: Finding[];
@@ -550,6 +551,10 @@ export type BackupCheckpointResponse = {
 
 export type FixActionKind =
   | 'rename_duplicate_name'
+  | 'rename_ambiguous_helper'
+  | 'remove_unused_helper'
+  | 'remove_unused_script'
+  | 'remove_orphan_config_module'
   | 'review_assistant_exposure'
   | 'review_stale_entity';
 
@@ -777,6 +782,34 @@ const findingDefinitions = {
 } satisfies Record<FindingKind, FindingDefinition>;
 
 const fixActionDefinitions = {
+  remove_orphan_config_module: {
+    definition:
+      'This repair plan stages a config-file removal diff for an orphan YAML module that no longer contributes extracted Home Assistant objects.',
+    label: 'Remove orphan config module',
+    reviewFocus:
+      'Confirm the file is truly obsolete before accepting the deletion diff.',
+  },
+  remove_unused_helper: {
+    definition:
+      'This repair plan stages a YAML patch that removes the unused helper definition from its config source.',
+    label: 'Remove unused helper',
+    reviewFocus:
+      'Confirm no dashboards, manual flows, or hidden integrations still depend on the helper before accepting the diff.',
+  },
+  remove_unused_script: {
+    definition:
+      'This repair plan stages a YAML patch that removes the unused script definition from its config source.',
+    label: 'Remove unused script',
+    reviewFocus:
+      'Confirm no manual routines, dashboards, or hidden callers still depend on the script before accepting the diff.',
+  },
+  rename_ambiguous_helper: {
+    definition:
+      'This repair plan stages a YAML patch that rewrites the helper name in config so the label carries clearer room or intent context.',
+    label: 'Rename ambiguous helper',
+    reviewFocus:
+      'Choose a durable helper name that explains room, role, or behavior intent before accepting the diff.',
+  },
   rename_duplicate_name: {
     definition:
       'This fix stages entity-registry name updates so the colliding entities stop sharing the same in-area user-facing label.',
@@ -811,9 +844,13 @@ export function getFixActionDefinition(
 }
 
 const findingActionKinds = new Map<FindingKind, FixActionKind>([
+  ['ambiguous_helper_name', 'rename_ambiguous_helper'],
   ['assistant_context_bloat', 'review_assistant_exposure'],
   ['duplicate_name', 'rename_duplicate_name'],
+  ['orphan_config_module', 'remove_orphan_config_module'],
   ['stale_entity', 'review_stale_entity'],
+  ['unused_helper', 'remove_unused_helper'],
+  ['unused_script', 'remove_unused_script'],
 ]);
 
 export function getFindingActionKind(
@@ -896,12 +933,25 @@ export type FixArtifact = {
   id: string;
   kind: FixArtifactKind;
   label: string;
+  path?: string;
+};
+
+export type FindingContext = {
+  category?: FindingCategory;
+  confidence?: number;
+  evidence: string;
+  recommendation?: FindingRecommendation;
+  relatedFindingIds?: string[];
+  summary?: string;
+  whyItMatters?: string;
 };
 
 export type FixAction = {
   artifacts: FixArtifact[];
   commands: FixCommand[];
+  executionMode: 'config_patch' | 'websocket_command';
   findingId: string;
+  findingContext: FindingContext;
   id: string;
   intent: string;
   kind: FixActionKind;
@@ -931,6 +981,7 @@ export type FixPreviewInput =
 
 export type FindingAdvisory = {
   findingId: string;
+  findingContext: FindingContext;
   id: string;
   rationale: string;
   steps: string[];

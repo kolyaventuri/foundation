@@ -1,3 +1,4 @@
+import {createHash} from 'node:crypto';
 import {readdirSync, readFileSync, statSync, type Dirent} from 'node:fs';
 import {dirname, extname, relative, resolve, sep} from 'node:path';
 import type {
@@ -29,8 +30,15 @@ type ConfigAnalysisResult = {
   helpers: InventoryHelper[];
   notes: ScanNote[];
   scenes: InventoryScene[];
+  sourceSnapshots: ConfigSourceSnapshot[];
   scripts: InventoryScript[];
   templates: InventoryTemplate[];
+};
+
+export type ConfigSourceSnapshot = {
+  content: string;
+  contentHash: string;
+  path: string;
 };
 
 type DirectoryIncludeMode =
@@ -104,6 +112,10 @@ function asEntries(value: unknown): Array<{key?: string; value: unknown}> {
 
 function uniqueStrings(values: string[]): string[] {
   return [...new Set(values)];
+}
+
+function createContentHash(content: string): string {
+  return createHash('sha256').update(content).digest('hex');
 }
 
 function slugifyObjectIdSegment(value: string): string {
@@ -702,6 +714,7 @@ export function analyzeConfigDirectory(
   >();
   const issues: ConfigIssue[] = [];
   const fileLineCounts = new Map<string, number>();
+  const fileContents = new Map<string, string>();
   const loadedDocuments = new Map<string, unknown>();
   const activeLoads = new Set<string>();
 
@@ -903,6 +916,7 @@ export function analyzeConfigDirectory(
     try {
       const raw = fileSystem.readFileSync(filePath, 'utf8');
       fileLineCounts.set(filePath, raw.split(/\r?\n/u).length);
+      fileContents.set(filePath, raw);
       const document = parseDocument(raw, {
         customTags: createCustomTags(filePath),
         prettyErrors: true,
@@ -915,6 +929,7 @@ export function analyzeConfigDirectory(
           .join('; ');
         recordFile(filePath, 'parse_error', message);
         recordIssue(filePath, 'parse_error', message, 'error');
+        fileContents.delete(filePath);
         return null;
       }
 
@@ -931,17 +946,20 @@ export function analyzeConfigDirectory(
       if (errnoError.code === 'ENOENT') {
         recordFile(filePath, 'missing', message);
         recordIssue(filePath, 'missing_file', message, 'warning');
+        fileContents.delete(filePath);
         return null;
       }
 
       if (errnoError.code === 'EACCES') {
         recordFile(filePath, 'permission_denied', message);
         recordIssue(filePath, 'permission_denied', message, 'error');
+        fileContents.delete(filePath);
         return null;
       }
 
       recordFile(filePath, 'parse_error', message);
       recordIssue(filePath, 'parse_error', message, 'error');
+      fileContents.delete(filePath);
       return null;
     } finally {
       activeLoads.delete(filePath);
@@ -1016,6 +1034,13 @@ export function analyzeConfigDirectory(
     helpers,
     notes: issues.map((issue) => toScanNote(issue)),
     scenes,
+    sourceSnapshots: [...fileContents.entries()]
+      .map(([filePath, content]) => ({
+        content,
+        contentHash: createContentHash(content),
+        path: normalizeRelativePath(resolvedRoot, filePath),
+      }))
+      .sort((left, right) => left.path.localeCompare(right.path)),
     scripts,
     templates,
   };

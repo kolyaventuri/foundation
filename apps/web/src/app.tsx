@@ -492,6 +492,7 @@ function canStageFinding(
   finding: Finding | undefined,
   entry: WorkbenchEntry | undefined,
   inputs: FixPreviewInput[],
+  selectedScan?: ScanDetail,
 ): boolean {
   if (!finding || !entry || entry.treatment !== 'actionable') {
     return false;
@@ -522,6 +523,19 @@ function canStageFinding(
     );
   }
 
+  if (finding.kind === 'ambiguous_helper_name') {
+    const helperId = finding.objectIds[0];
+    const draftedName = helperId
+      ? getNameInputValue(inputs, finding.id, helperId).trim()
+      : '';
+    const currentName =
+      helperId && selectedScan
+        ? (findHelper(selectedScan, helperId)?.name ?? '')
+        : '';
+
+    return draftedName.length > 0 && draftedName !== currentName;
+  }
+
   return true;
 }
 
@@ -543,11 +557,27 @@ function getFindingInputStatusSummary(
       : 'The reviewed assistant keep-set is ready to stage when it differs from the current exposure set.';
   }
 
+  if (finding.kind === 'ambiguous_helper_name') {
+    return getNameInputValue(
+      inputs,
+      finding.id,
+      finding.objectIds[0] ?? '',
+    ).trim().length === 0
+      ? 'Provide the reviewed helper name before staging this finding.'
+      : 'The reviewed helper name is ready to stage when it differs from the current label.';
+  }
+
   return 'No operator input is required for this finding kind.';
 }
 
 function findEntity(scan: ScanDetail, entityId: string) {
   return scan.inventory.entities.find((entity) => entity.entityId === entityId);
+}
+
+function findHelper(scan: ScanDetail, helperId: string) {
+  return scan.inventory.helpers?.find(
+    (candidate) => candidate.helperId === helperId,
+  );
 }
 
 function createDefaultFilters(): RailFilters {
@@ -1238,6 +1268,7 @@ export function App() {
     activeFinding,
     activeEntry,
     activeInputs,
+    selectedScan,
   );
 
   return (
@@ -2389,6 +2420,17 @@ function FindingActionEditor({
       );
     }
 
+    case 'ambiguous_helper_name': {
+      return (
+        <HelperRenameEditor
+          activeFinding={activeFinding}
+          activeInputs={activeInputs}
+          onUpdateDraftInput={onUpdateDraftInput}
+          selectedScan={selectedScan}
+        />
+      );
+    }
+
     default: {
       return null;
     }
@@ -2758,6 +2800,85 @@ function DuplicateNameEditor({
   );
 }
 
+function HelperRenameEditor({
+  activeFinding,
+  activeInputs,
+  onUpdateDraftInput,
+  selectedScan,
+}: {
+  activeFinding: Finding;
+  activeInputs: FixPreviewInput[];
+  onUpdateDraftInput: (nextInput: FixPreviewInput) => void;
+  selectedScan: ScanDetail;
+}) {
+  const helperId = activeFinding.objectIds[0] ?? '';
+  const helper = helperId ? findHelper(selectedScan, helperId) : undefined;
+  const recommendedName = helper
+    ? `${helper.name} (${helper.helperId})`
+    : helperId;
+
+  return (
+    <section className="rounded-[1.2rem] border border-black/8 bg-white/72 p-4">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <h3 className="font-semibold text-ink-strong">Helper rename patch</h3>
+          <p className="mt-2 text-sm leading-6 text-ink-soft">
+            Review the helper label, then stage the exact config name to write.
+          </p>
+        </div>
+        <span className="rounded-full border border-black/10 bg-ink-strong/5 px-3 py-2 text-xs font-semibold tracking-[0.16em] text-ink-soft uppercase">
+          1 target
+        </span>
+      </div>
+
+      <div className="mt-4 grid gap-3 rounded-[0.95rem] border border-black/8 bg-ink-strong/3 p-3 lg:grid-cols-[minmax(0,1.1fr)_minmax(0,0.8fr)_minmax(0,0.9fr)_minmax(0,1fr)]">
+        <div className="min-w-0">
+          <p className="text-[0.68rem] uppercase tracking-[0.16em] text-ink-soft">
+            Helper
+          </p>
+          <p className="break-all font-semibold text-ink-strong">{helperId}</p>
+        </div>
+
+        <div className="min-w-0">
+          <p className="text-[0.68rem] uppercase tracking-[0.16em] text-ink-soft">
+            Current
+          </p>
+          <p className="break-words text-ink-soft">
+            {helper?.name ?? 'Unknown helper'}
+          </p>
+        </div>
+
+        <div className="min-w-0">
+          <p className="text-[0.68rem] uppercase tracking-[0.16em] text-ink-soft">
+            Recommended
+          </p>
+          <p className="break-all text-ink-soft">{recommendedName}</p>
+        </div>
+
+        <label className="min-w-0">
+          <span className="text-[0.68rem] uppercase tracking-[0.16em] text-ink-soft">
+            New name
+          </span>
+          <input
+            className="mt-1 w-full min-w-0 rounded-full border border-black/10 bg-white px-4 py-2 text-sm text-ink-strong outline-none transition focus:border-accent/35"
+            onChange={(event) => {
+              onUpdateDraftInput({
+                field: 'name',
+                findingId: activeFinding.id,
+                targetId: helperId,
+                value: event.target.value,
+              });
+            }}
+            placeholder={recommendedName}
+            type="text"
+            value={getNameInputValue(activeInputs, activeFinding.id, helperId)}
+          />
+        </label>
+      </div>
+    </section>
+  );
+}
+
 function AssistantExposureEditor({
   activeFinding,
   activeInputs,
@@ -2948,8 +3069,8 @@ function BatchReviewPanel({
             <p className="font-semibold text-ink-strong">Preview required</p>
             <p className="mt-2 text-sm leading-6 text-ink-soft">
               The staged batch has changed since the last preview. Build a fresh
-              preview to inspect the exact commands and artifacts before dry-run
-              apply.
+              preview to inspect the exact repair commands and patch artifacts
+              before dry-run apply.
             </p>
           </section>
         ) : (
@@ -2987,6 +3108,11 @@ function BatchReviewPanel({
                     <p className="mt-1 text-sm text-ink-soft">
                       {action.intent}
                     </p>
+                    <p className="mt-2 text-xs uppercase tracking-[0.16em] text-ink-soft">
+                      {action.executionMode === 'config_patch'
+                        ? 'Config patch review'
+                        : 'Websocket command review'}
+                    </p>
                   </div>
                   <span
                     className={`inline-flex rounded-full border px-3 py-1 text-[0.68rem] font-semibold tracking-[0.16em] uppercase ${severityToneClasses[action.risk]}`}
@@ -3000,32 +3126,51 @@ function BatchReviewPanel({
                     <p className="text-xs uppercase tracking-[0.16em] text-ink-soft">
                       Commands
                     </p>
-                    {action.commands.map((command) => (
-                      <article className="mt-3" key={command.id}>
-                        <p className="text-sm font-semibold text-ink-strong">
-                          {command.summary}
-                        </p>
-                        <pre className="mt-2 overflow-x-auto rounded-[0.9rem] border border-black/8 bg-white/80 p-3 text-xs leading-6 text-ink-soft">
-                          {JSON.stringify(command.payload, null, 2)}
-                        </pre>
-                      </article>
-                    ))}
+                    {action.commands.length === 0 ? (
+                      <p className="mt-3 text-sm leading-6 text-ink-soft">
+                        {action.executionMode === 'config_patch'
+                          ? 'This repair plan is patch-only. Review the diff artifact and keep apply in dry-run mode.'
+                          : 'No websocket payload was generated for this action.'}
+                      </p>
+                    ) : (
+                      action.commands.map((command) => (
+                        <article className="mt-3" key={command.id}>
+                          <p className="text-sm font-semibold text-ink-strong">
+                            {command.summary}
+                          </p>
+                          <pre className="mt-2 overflow-x-auto rounded-[0.9rem] border border-black/8 bg-white/80 p-3 text-xs leading-6 text-ink-soft">
+                            {JSON.stringify(command.payload, null, 2)}
+                          </pre>
+                        </article>
+                      ))
+                    )}
                   </section>
 
                   <section className="rounded-[1rem] border border-black/8 bg-ink-strong/4 p-4">
                     <p className="text-xs uppercase tracking-[0.16em] text-ink-soft">
                       Artifacts
                     </p>
-                    {action.artifacts.map((artifact) => (
-                      <article className="mt-3" key={artifact.id}>
-                        <p className="text-sm font-semibold text-ink-strong">
-                          {artifact.label}
-                        </p>
-                        <pre className="mt-2 overflow-x-auto rounded-[0.9rem] border border-black/8 bg-white/80 p-3 text-xs leading-6 text-ink-soft">
-                          {artifact.content}
-                        </pre>
-                      </article>
-                    ))}
+                    {action.artifacts.length === 0 ? (
+                      <p className="mt-3 text-sm leading-6 text-ink-soft">
+                        No diff artifact is available yet for this action.
+                      </p>
+                    ) : (
+                      action.artifacts.map((artifact) => (
+                        <article className="mt-3" key={artifact.id}>
+                          <p className="text-sm font-semibold text-ink-strong">
+                            {artifact.label}
+                          </p>
+                          {artifact.path && (
+                            <p className="mt-1 break-all text-xs text-ink-soft">
+                              {artifact.path}
+                            </p>
+                          )}
+                          <pre className="mt-2 overflow-x-auto rounded-[0.9rem] border border-black/8 bg-white/80 p-3 text-xs leading-6 text-ink-soft">
+                            {artifact.content}
+                          </pre>
+                        </article>
+                      ))
+                    )}
                   </section>
                 </div>
               </details>

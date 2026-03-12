@@ -11,7 +11,9 @@ This repo can already talk to a real Home Assistant instance for live, read-only
 - live scans use Home Assistant REST plus WebSocket discovery
 - live scans are read-only
 - deep scans can analyze Home Assistant config files if you give the tool a local `configPath`
-- preview/apply is still dry-run only; no live mutation path is wired up yet
+- deep scans persist YAML source snapshots so later repair previews can rebuild exact config patches from the saved scan
+- preview and export can show either Home Assistant websocket payloads or YAML patch artifacts, depending on the finding
+- apply is still dry-run only; no live mutation path is wired up yet
 - the web UI can create live scans from saved profiles and review persisted runs
 
 ## Prerequisites
@@ -148,9 +150,11 @@ Once a live scan exists, the web workbench can:
 
 - browse findings
 - stage recommended changes
-- build preview batches
-- run dry-run apply
+- build preview batches with exact websocket payloads and config patch diffs
+- run dry-run apply against the reviewed batch without mutating Home Assistant or local files
 - capture a backup checkpoint for live scans
+
+Config-backed repair plans are only available when the saved scan was created with deep config analysis and persisted source snapshots.
 
 Important: the web UI reads saved profiles from the API database. If no live profiles appear in the browser, save one first through the CLI or API and make sure the web/API process is pointed at the same `HA_REPAIR_DB_PATH`.
 
@@ -233,6 +237,8 @@ Export the latest scan as Markdown:
 ```sh
 pnpm --filter @ha-repair/cli dev export --format md
 ```
+
+That export includes the reviewed repair plan surface for the saved scan, including websocket payloads, YAML patch artifacts, and advisory context.
 
 Export a specific scan as JSON:
 

@@ -25,7 +25,6 @@ import {
   type Finding,
   type FindingAdvisory,
   type FindingKind,
-  type FindingTreatment,
   type FindingSeverity,
   type FixAction,
   type FixApplyRequest,
@@ -63,21 +62,21 @@ import {
   collectScanData,
   createBackupCheckpoint as createHomeAssistantBackupCheckpoint,
   probeCapabilities,
+  type ConfigSourceSnapshot,
   testConnection,
   type BackupCheckpointRequest,
   type CollectedScanData,
   type ReadOnlyScanRequest,
 } from '@ha-repair/ha-client';
 import {enrichScan} from '@ha-repair/llm';
+import {createScanFingerprint, runScan} from '@ha-repair/scan-engine';
 import {
-  createFindingAdvisories,
-  createScanFingerprint,
-  createFixActions,
-  runScan,
-} from '@ha-repair/scan-engine';
+  createRepairPlan,
+  getFindingTreatment as getPlannerFindingTreatment,
+} from './repair-planner';
 
 const defaultDatabasePath = './data/ha-repair.sqlite';
-const currentSchemaVersion = 5;
+const currentSchemaVersion = 6;
 const defaultProfileSettingKey = 'defaultProfileName';
 
 type StoredWorkbenchItemStatus = 'staged' | 'dry_run_applied';
@@ -198,10 +197,29 @@ const scanWorkbenchItemsTable = sqliteTable(
   }),
 );
 
+const scanConfigSourcesTable = sqliteTable(
+  'scan_config_sources',
+  {
+    sequence: integer('sequence').primaryKey({autoIncrement: true}),
+    scanId: text('scan_id').notNull(),
+    path: text('path').notNull(),
+    content: text('content').notNull(),
+    contentHash: text('content_hash').notNull(),
+  },
+  (table) => ({
+    scanPathIndex: uniqueIndex('scan_config_sources_scan_id_path_idx').on(
+      table.scanId,
+      table.path,
+    ),
+    scanIdIndex: index('scan_config_sources_scan_id_idx').on(table.scanId),
+  }),
+);
+
 type ProfilesRow = typeof profilesTable.$inferSelect;
 type ScanRunRow = typeof scanRunsTable.$inferSelect;
 type ScanFindingRow = typeof scanFindingsTable.$inferSelect;
 type FixQueueEntryRow = typeof fixQueueEntriesTable.$inferSelect;
+type ScanConfigSourceRow = typeof scanConfigSourcesTable.$inferSelect;
 type ScanWorkbenchRow = typeof scanWorkbenchesTable.$inferSelect;
 type ScanWorkbenchItemRow = typeof scanWorkbenchItemsTable.$inferSelect;
 
@@ -494,6 +512,25 @@ function applyMigrations(database: DatabaseSync) {
     `);
   }
 
+  if (version < 6) {
+    database.exec(`
+      CREATE TABLE IF NOT EXISTS scan_config_sources (
+        sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+        scan_id TEXT NOT NULL,
+        path TEXT NOT NULL,
+        content TEXT NOT NULL,
+        content_hash TEXT NOT NULL,
+        FOREIGN KEY (scan_id) REFERENCES scan_runs(id) ON DELETE CASCADE
+      );
+
+      CREATE UNIQUE INDEX IF NOT EXISTS scan_config_sources_scan_id_path_idx
+      ON scan_config_sources (scan_id, path);
+
+      CREATE INDEX IF NOT EXISTS scan_config_sources_scan_id_idx
+      ON scan_config_sources (scan_id);
+    `);
+  }
+
   database.exec(`PRAGMA user_version = ${currentSchemaVersion};`);
 }
 
@@ -567,6 +604,7 @@ function createDatabaseClient(databasePath: string) {
       appSettingsTable,
       fixQueueEntriesTable,
       profilesTable,
+      scanConfigSourcesTable,
       scanFindingsTable,
       scanRunsTable,
       scanWorkbenchItemsTable,
@@ -687,12 +725,27 @@ function toFixQueueEntry(row: FixQueueEntryRow): FixQueueEntry {
   };
 }
 
+function normalizeStoredFixAction(action: FixAction): FixAction {
+  return {
+    ...action,
+    executionMode:
+      action.executionMode ??
+      (action.commands.length > 0 ? 'websocket_command' : 'config_patch'),
+    findingContext: action.findingContext ?? {
+      evidence: action.rationale,
+      ...(action.warnings[0] ? {whyItMatters: action.warnings[0]} : {}),
+    },
+  };
+}
+
 function toStoredPreviewResponse(
   scanId: string,
   row: FixQueueEntryRow,
 ): FixPreviewResponse {
   return {
-    actions: parseJson<FixAction[]>(row.actionsJson),
+    actions: parseJson<FixAction[]>(row.actionsJson).map((action) =>
+      normalizeStoredFixAction(action),
+    ),
     advisories: [],
     generatedAt: row.createdAt,
     previewToken: row.previewToken,
@@ -708,25 +761,16 @@ function toStoredWorkbenchStatus(
   return status;
 }
 
-function getFindingTreatment(
-  inventory: InventoryGraph,
-  finding: Finding,
-): FindingTreatment {
-  return createFixActions(inventory, [finding]).length > 0
-    ? 'actionable'
-    : 'advisory';
-}
-
 function toWorkbenchEntry({
+  context,
   finding,
-  inventory,
   row,
 }: {
+  context: Parameters<typeof getPlannerFindingTreatment>[0];
   finding: Finding;
-  inventory: InventoryGraph;
   row: ScanWorkbenchItemRow | undefined;
 }): WorkbenchEntry {
-  const treatment = getFindingTreatment(inventory, finding);
+  const treatment = getPlannerFindingTreatment(context, finding);
   const updatedAt = resolveOptionalString(row?.updatedAt ?? null);
 
   return {
@@ -798,12 +842,15 @@ function createQueueEntryId(): string {
   return `queue-${randomUUID()}`;
 }
 
-function createScanExportBundle(scan: ScanDetail): ScanExportBundle {
+function createScanExportBundle(
+  scan: ScanDetail,
+  repairPlan: ReturnType<typeof createRepairPlan>,
+): ScanExportBundle {
   const {diffSummary, ...scanRun} = scan;
 
   return {
-    actions: createFixActions(scan.inventory, scan.findings),
-    advisories: createFindingAdvisories(scan.inventory, scan.findings),
+    actions: repairPlan.actions,
+    advisories: repairPlan.advisories,
     diffSummary,
     findings: scan.findings,
     generatedAt: new Date().toISOString(),
@@ -1070,11 +1117,19 @@ export function renderScanExportMarkdown(bundle: ScanExportBundle): string {
         `- Action ID: ${action.id}`,
         `- Finding ID: ${action.findingId}`,
         `- Kind: ${action.kind}`,
+        `- Execution mode: ${action.executionMode}`,
         `- Definition: ${actionDefinition.definition}`,
         `- Review focus: ${actionDefinition.reviewFocus}`,
         `- Risk: ${action.risk}`,
         `- Intent: ${action.intent}`,
         `- Rationale: ${action.rationale}`,
+        ...(action.findingContext.summary
+          ? [`- Finding summary: ${action.findingContext.summary}`]
+          : []),
+        `- Finding evidence: ${action.findingContext.evidence}`,
+        ...(action.findingContext.whyItMatters
+          ? [`- Why it matters: ${action.findingContext.whyItMatters}`]
+          : []),
         `- Requires confirmation: ${action.requiresConfirmation ? 'yes' : 'no'}`,
         formatLineItemList(
           'Targets',
@@ -1100,7 +1155,9 @@ export function renderScanExportMarkdown(bundle: ScanExportBundle): string {
 
       if (action.commands.length === 0) {
         lines.push(
-          '- Commands: No literal Home Assistant payloads generated yet.',
+          action.executionMode === 'config_patch'
+            ? '- Commands: This repair plan is patch-only and does not send a live Home Assistant websocket payload.'
+            : '- Commands: No reviewed Home Assistant websocket payloads generated yet.',
         );
       } else {
         for (const command of action.commands) {
@@ -1116,6 +1173,7 @@ export function renderScanExportMarkdown(bundle: ScanExportBundle): string {
       for (const artifact of action.artifacts) {
         lines.push(
           `- Artifact: ${artifact.label} (${artifact.kind})`,
+          ...(artifact.path ? [`- Artifact path: ${artifact.path}`] : []),
           '```diff',
           artifact.content,
           '```',
@@ -1141,6 +1199,13 @@ export function renderScanExportMarkdown(bundle: ScanExportBundle): string {
       ...(finding ? formatFindingDefinitionLines(finding) : []),
       `- Summary: ${advisory.summary}`,
       `- Rationale: ${advisory.rationale}`,
+      ...(advisory.findingContext.summary
+        ? [`- Finding summary: ${advisory.findingContext.summary}`]
+        : []),
+      `- Finding evidence: ${advisory.findingContext.evidence}`,
+      ...(advisory.findingContext.whyItMatters
+        ? [`- Why it matters: ${advisory.findingContext.whyItMatters}`]
+        : []),
       formatLineItemList(
         'Targets',
         advisory.targets.map((target) => `${target.label} [${target.kind}]`),
@@ -1363,6 +1428,36 @@ export async function createRepairService(
       .limit(1);
 
     return row;
+  }
+
+  async function listConfigSourceRows(
+    scanId: string,
+  ): Promise<ScanConfigSourceRow[]> {
+    return db
+      .select()
+      .from(scanConfigSourcesTable)
+      .where(eq(scanConfigSourcesTable.scanId, scanId))
+      .orderBy(asc(scanConfigSourcesTable.path));
+  }
+
+  async function loadRepairPlannerContext(
+    scan: Pick<ScanRun, 'capabilities' | 'id' | 'inventory'>,
+  ) {
+    const snapshotRows = await listConfigSourceRows(scan.id);
+
+    return {
+      ...(scan.capabilities ? {capabilities: scan.capabilities} : {}),
+      ...(snapshotRows.length > 0
+        ? {
+            configSourceSnapshots: snapshotRows.map((row) => ({
+              content: row.content,
+              contentHash: row.contentHash,
+              path: row.path,
+            })),
+          }
+        : {}),
+      inventory: scan.inventory,
+    };
   }
 
   async function requireScanRow(scanId: string): Promise<ScanRunRow> {
@@ -1590,12 +1685,17 @@ export async function createRepairService(
     };
   }
 
-  function validateActionableWorkbenchFinding(
+  async function validateActionableWorkbenchFinding(
     scan: ScanDetail,
     finding: Finding,
     inputs: FixPreviewInput[],
   ) {
-    const actions = createFixActions(scan.inventory, [finding], inputs);
+    const repairPlan = createRepairPlan(
+      await loadRepairPlannerContext(scan),
+      [finding],
+      inputs,
+    );
+    const actions = repairPlan.actions;
 
     if (actions.length === 0) {
       throw createServiceError(
@@ -1611,7 +1711,7 @@ export async function createRepairService(
       throw createServiceError(
         'fix_input_required',
         400,
-        `Provide literal Home Assistant input values before staging: ${formatMissingInputMessage(missingInputs)}.`,
+        `Provide reviewed repair input values before staging: ${formatMissingInputMessage(missingInputs)}.`,
       );
     }
   }
@@ -1639,6 +1739,7 @@ export async function createRepairService(
   async function buildScanWorkbench(scan: ScanDetail): Promise<ScanWorkbench> {
     const workbenchRow = await ensureScanWorkbenchRow(scan.id);
     const itemRows = await listScanWorkbenchItemRows(scan.id);
+    const repairPlannerContext = await loadRepairPlannerContext(scan);
     const itemRowLookup = new Map(
       itemRows.map((row) => [row.findingId, row] as const),
     );
@@ -1658,8 +1759,8 @@ export async function createRepairService(
         : undefined;
     const entries = scan.findings.map((finding) =>
       toWorkbenchEntry({
+        context: repairPlannerContext,
         finding,
-        inventory: scan.inventory,
         row: itemRowLookup.get(finding.id),
       }),
     );
@@ -1688,7 +1789,10 @@ export async function createRepairService(
     return (await getDefaultProfileName()) ?? null;
   }
 
-  async function saveScan(scan: ScanRun): Promise<ScanDetail> {
+  async function saveScan(
+    scan: ScanRun,
+    options: {configSourceSnapshots?: ConfigSourceSnapshot[]} = {},
+  ): Promise<ScanDetail> {
     await db.transaction(async (transaction) => {
       await transaction.insert(scanRunsTable).values({
         createdAt: scan.createdAt,
@@ -1712,6 +1816,18 @@ export async function createRepairService(
         })),
         async (rows) => {
           await transaction.insert(scanFindingsTable).values(rows);
+        },
+      );
+
+      await maybeInsertRows(
+        (options.configSourceSnapshots ?? []).map((snapshot) => ({
+          content: snapshot.content,
+          contentHash: snapshot.contentHash,
+          path: snapshot.path,
+          scanId: scan.id,
+        })),
+        async (rows) => {
+          await transaction.insert(scanConfigSourcesTable).values(rows);
         },
       );
     });
@@ -1772,15 +1888,19 @@ export async function createRepairService(
       request.findingIds,
     );
     const scan = await requireScanDetail(request.scanId);
-    const actions = createFixActions(scan.inventory, findings, request.inputs);
-    const advisories = createFindingAdvisories(scan.inventory, findings);
+    const repairPlan = createRepairPlan(
+      await loadRepairPlannerContext(scan),
+      findings,
+      request.inputs,
+    );
+    const {actions, advisories} = repairPlan;
     const missingInputs = getIncompleteRequiredInputs(actions);
 
     if (missingInputs.length > 0) {
       throw createServiceError(
         'fix_input_required',
         400,
-        `Provide literal Home Assistant input values before preview: ${formatMissingInputMessage(missingInputs)}.`,
+        `Provide reviewed repair input values before preview: ${formatMissingInputMessage(missingInputs)}.`,
       );
     }
 
@@ -1788,7 +1908,7 @@ export async function createRepairService(
       throw createServiceError(
         'no_previewable_actions',
         400,
-        'The selected findings do not map to literal previewable Home Assistant commands.',
+        'The selected findings do not map to previewable repair plans for this saved scan.',
       );
     }
 
@@ -1828,7 +1948,7 @@ export async function createRepairService(
       throw createServiceError(
         'dry_run_required',
         400,
-        'Only dry-run apply is available in Phase B.',
+        'Only dry-run apply is available in Phase 3.',
       );
     }
 
@@ -1875,7 +1995,9 @@ export async function createRepairService(
       })
       .where(eq(fixQueueEntriesTable.id, queueEntryRow.id));
 
-    const actions = parseJson<FixAction[]>(queueEntryRow.actionsJson);
+    const actions = parseJson<FixAction[]>(queueEntryRow.actionsJson).map(
+      (action) => normalizeStoredFixAction(action),
+    );
     const queue = toFixQueueEntry({
       ...queueEntryRow,
       lastAppliedAt: appliedAt,
@@ -1979,11 +2101,16 @@ export async function createRepairService(
 
     scan = {
       ...scan,
+      capabilities: collected.connection.capabilities,
       enrichment,
       passes: [...collected.passes, rulesPass, enrichmentPass],
     };
 
-    return saveScan(scan);
+    return saveScan(scan, {
+      ...(collected.configSourceSnapshots
+        ? {configSourceSnapshots: collected.configSourceSnapshots}
+        : {}),
+    });
   }
 
   async function getBackupCheckpoint(scanId: string) {
@@ -2068,8 +2195,12 @@ export async function createRepairService(
     }
 
     const scan = await requireScanDetail(resolvedScanId);
+    const repairPlan = createRepairPlan(
+      await loadRepairPlannerContext(scan),
+      scan.findings,
+    );
 
-    return createScanExportBundle(scan);
+    return createScanExportBundle(scan, repairPlan);
   }
 
   async function getScan(scanId: string) {
@@ -2100,7 +2231,7 @@ export async function createRepairService(
     await ensureScanWorkbenchRow(scanId);
 
     const inputs = normalizeWorkbenchInputs(findingId, request.inputs);
-    validateActionableWorkbenchFinding(scan, finding, inputs);
+    await validateActionableWorkbenchFinding(scan, finding, inputs);
     const timestamp = new Date().toISOString();
 
     await db
@@ -2216,7 +2347,7 @@ export async function createRepairService(
       throw createServiceError(
         'dry_run_required',
         400,
-        'Only dry-run apply is available in Phase B.',
+        'Only dry-run apply is available in Phase 3.',
       );
     }
 

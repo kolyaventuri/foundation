@@ -1,6 +1,7 @@
 import type {
   AssistantKind,
   Finding,
+  FindingContext,
   FindingAdvisory,
   FixAction,
   FixArtifact,
@@ -25,12 +26,30 @@ function createDiffArtifact(
   actionId: string,
   lines: string[],
   label: string,
+  path?: string,
 ): FixArtifact {
   return {
     content: lines.join('\n'),
     id: `${actionId}:diff`,
     kind: 'text_diff',
     label,
+    ...(path ? {path} : {}),
+  };
+}
+
+function createFindingContext(finding: Finding): FindingContext {
+  return {
+    ...(finding.category ? {category: finding.category} : {}),
+    ...(finding.confidence === undefined
+      ? {}
+      : {confidence: finding.confidence}),
+    evidence: finding.evidence,
+    ...(finding.recommendation ? {recommendation: finding.recommendation} : {}),
+    ...(finding.relatedFindingIds
+      ? {relatedFindingIds: finding.relatedFindingIds}
+      : {}),
+    ...(finding.summary ? {summary: finding.summary} : {}),
+    ...(finding.whyItMatters ? {whyItMatters: finding.whyItMatters} : {}),
   };
 }
 
@@ -65,6 +84,7 @@ function createSharedLabelObservationAdvisory(
 ): FindingAdvisory {
   return {
     findingId: finding.id,
+    findingContext: createFindingContext(finding),
     id: `advisory:${finding.id}`,
     rationale:
       'Repeated labels that span different roles or areas are noted for awareness, but they are not treated as a direct rename target unless they create a user-facing in-area collision.',
@@ -196,7 +216,9 @@ function createDuplicateNameAction(
   return {
     artifacts,
     commands,
+    executionMode: 'websocket_command',
     findingId: finding.id,
+    findingContext: createFindingContext(finding),
     id: `fix:${finding.id}:rename`,
     intent:
       'Send explicit entity registry rename commands so each duplicate display label can be reviewed and resolved with literal Home Assistant payloads.',
@@ -310,7 +332,9 @@ function createAssistantExposureAction(
             ),
           ],
     commands: command ? [command] : [],
+    executionMode: 'websocket_command',
     findingId: finding.id,
+    findingContext: createFindingContext(finding),
     id: `fix:${finding.id}:review-assistant-exposure`,
     intent:
       'Review and narrow assistant exposure for the entity by sending an explicit entity registry update payload.',
@@ -370,7 +394,9 @@ function createStaleEntityAction(
       ),
     ],
     commands: [command],
+    executionMode: 'websocket_command',
     findingId: finding.id,
+    findingContext: createFindingContext(finding),
     id: `fix:${finding.id}:review-stale`,
     intent:
       'Disable the stale entity through the entity registry so it no longer behaves like an active automation surface.',
@@ -433,6 +459,7 @@ function createGenericAdvisory(input: {
 }): FindingAdvisory {
   return {
     findingId: input.finding.id,
+    findingContext: createFindingContext(input.finding),
     id: `advisory:${input.finding.id}`,
     rationale: input.rationale,
     steps: input.steps,
@@ -452,6 +479,7 @@ function createOrphanedEntityDeviceAdvisory(
 
   return {
     findingId: finding.id,
+    findingContext: createFindingContext(finding),
     id: `advisory:${finding.id}`,
     rationale:
       'Home Assistant does not expose a literal entity registry update for changing device_id through the normal admin websocket API.',
@@ -487,7 +515,7 @@ function createOrphanedEntityDeviceAdvisory(
 
 type AdvisoryConfig = Omit<
   FindingAdvisory,
-  'findingId' | 'id' | 'targets' | 'title'
+  'findingContext' | 'findingId' | 'id' | 'targets' | 'title'
 >;
 
 const advisoryConfigs: Partial<Record<Finding['kind'], AdvisoryConfig>> = {

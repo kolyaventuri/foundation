@@ -76,8 +76,24 @@ function getActionablePriority(record: WorkbenchFindingRecord): number {
       return 2;
     }
 
-    default: {
+    case 'ambiguous_helper_name': {
       return 3;
+    }
+
+    case 'unused_helper': {
+      return 4;
+    }
+
+    case 'unused_script': {
+      return 5;
+    }
+
+    case 'orphan_config_module': {
+      return 6;
+    }
+
+    default: {
+      return 7;
     }
   }
 }

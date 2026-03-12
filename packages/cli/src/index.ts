@@ -164,7 +164,8 @@ function buildPreviewInputs(
       const parsed = parseEntityNameInput(value);
       const finding = findings.find(
         (candidate) =>
-          candidate.kind === 'duplicate_name' &&
+          (candidate.kind === 'duplicate_name' ||
+            candidate.kind === 'ambiguous_helper_name') &&
           candidate.objectIds.includes(parsed.targetId),
       );
 
@@ -172,7 +173,7 @@ function buildPreviewInputs(
         throw new RepairServiceError(
           'invalid_preview_input',
           400,
-          `No selected duplicate-name finding includes ${parsed.targetId}.`,
+          `No selected duplicate-name or ambiguous-helper finding includes ${parsed.targetId}.`,
         );
       }
 
@@ -648,13 +649,11 @@ export function buildProgram() {
 
   program
     .command('preview [findingIds...]')
-    .description(
-      'Preview literal dry-run Home Assistant commands for selected findings',
-    )
+    .description('Preview dry-run repair plans for selected findings')
     .requiredOption('--scan <scanId>', 'Scan id to preview')
     .option(
       '--name <entityId=value>',
-      'Explicit entity registry name for a duplicate-name target',
+      'Reviewed name for a duplicate-name entity or ambiguous helper target',
       collectRepeatedValue,
       [],
     )
@@ -714,13 +713,15 @@ export function buildProgram() {
 
   program
     .command('apply <actionIds...>')
-    .description('Run a reviewed dry-run apply for explicitly selected actions')
+    .description(
+      'Run a reviewed dry-run apply for explicitly selected repair plans',
+    )
     .requiredOption('--scan <scanId>', 'Scan id to preview/apply')
     .requiredOption(
       '--preview-token <token>',
       'Preview token returned by the reviewed preview step',
     )
-    .option('--dry-run', 'Required for Phase B')
+    .option('--dry-run', 'Required for Phase 3')
     .action(
       async (
         actionIds: string[],
@@ -736,7 +737,7 @@ export function buildProgram() {
             throw new RepairServiceError(
               'dry_run_required',
               400,
-              'Pass --dry-run. Live apply is not available in Phase B.',
+              'Pass --dry-run. Live apply is not available in Phase 3.',
             );
           }
 

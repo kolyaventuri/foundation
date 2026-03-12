@@ -4,7 +4,7 @@ import {join} from 'node:path';
 import process from 'node:process';
 import {DatabaseSync} from 'node:sqlite';
 import {afterEach, describe, expect, it} from 'vitest';
-import type {InventoryGraph} from '@ha-repair/contracts';
+import type {CapabilitySet, InventoryGraph} from '@ha-repair/contracts';
 import {createRepairService, renderScanExportMarkdown} from './index';
 
 const temporaryDirectories: string[] = [];
@@ -273,6 +273,169 @@ const changedInventory: InventoryGraph = {
   source: 'mock',
 };
 
+const supportedCapabilities: CapabilitySet = {
+  areaRegistry: {status: 'supported'},
+  automationMetadata: {status: 'supported'},
+  backups: {status: 'supported'},
+  configFiles: {status: 'supported'},
+  deviceRegistry: {status: 'supported'},
+  entityRegistry: {status: 'supported'},
+  exposureControl: {status: 'supported'},
+  floorRegistry: {status: 'supported'},
+  labelRegistry: {status: 'supported'},
+  sceneMetadata: {status: 'supported'},
+};
+
+const phaseThreeRepairInventory: InventoryGraph = {
+  areas: [
+    {
+      areaId: 'area.office',
+      name: 'Office',
+    },
+  ],
+  automations: [],
+  configAnalysis: {
+    files: [
+      {
+        filePath: 'input_boolean.yaml',
+        status: 'loaded',
+        summary: 'Loaded configuration file.',
+      },
+      {
+        filePath: 'legacy_empty.yaml',
+        status: 'loaded',
+        summary: 'Loaded configuration file.',
+      },
+      {
+        filePath: 'scripts.yaml',
+        status: 'loaded',
+        summary: 'Loaded configuration file.',
+      },
+    ],
+    issues: [],
+    loadedFileCount: 3,
+    rootPath: '/config',
+  },
+  configModules: [
+    {
+      automationCount: 0,
+      filePath: 'input_boolean.yaml',
+      helperCount: 1,
+      lineCount: 6,
+      objectTypesPresent: ['helper'],
+      sceneCount: 0,
+      scriptCount: 0,
+      templateCount: 0,
+    },
+    {
+      automationCount: 0,
+      filePath: 'scripts.yaml',
+      helperCount: 0,
+      lineCount: 6,
+      objectTypesPresent: ['script'],
+      sceneCount: 0,
+      scriptCount: 1,
+      templateCount: 0,
+    },
+    {
+      automationCount: 0,
+      filePath: 'legacy_empty.yaml',
+      helperCount: 0,
+      lineCount: 5,
+      objectTypesPresent: [],
+      sceneCount: 0,
+      scriptCount: 0,
+      templateCount: 0,
+    },
+  ],
+  devices: [],
+  entities: [
+    {
+      areaId: 'area.office',
+      disabledBy: null,
+      displayName: 'Office Lamp',
+      entityId: 'light.office_lamp',
+      isStale: false,
+      name: null,
+    },
+    {
+      areaId: 'area.office',
+      disabledBy: null,
+      displayName: 'Office Lamp',
+      entityId: 'switch.office_lamp_accent',
+      isStale: false,
+      name: null,
+    },
+    {
+      areaId: 'area.office',
+      disabledBy: null,
+      displayName: 'Office Power',
+      entityId: 'sensor.office_lamp_power',
+      isStale: true,
+      name: null,
+    },
+  ],
+  floors: [],
+  helpers: [
+    {
+      helperId: 'input_boolean.mode',
+      helperType: 'input_boolean',
+      name: 'Mode',
+      sourcePath: 'input_boolean.yaml',
+    },
+  ],
+  labels: [],
+  scenes: [],
+  scripts: [
+    {
+      name: 'Legacy Shutdown',
+      references: {
+        entityIds: [],
+        helperIds: [],
+        sceneIds: [],
+        scriptIds: [],
+        serviceIds: ['light.turn_off'],
+      },
+      scriptId: 'script.legacy_shutdown',
+      sourcePath: 'scripts.yaml',
+      targetEntityIds: [],
+    },
+  ],
+  source: 'mock',
+  templates: [],
+};
+
+const phaseThreeConfigSourceSnapshots = [
+  {
+    content: [
+      '# Office helper',
+      'mode:',
+      '  name: Mode',
+      '  initial: false',
+      '',
+    ].join('\n'),
+    contentHash: 'hash-input-boolean',
+    path: 'input_boolean.yaml',
+  },
+  {
+    content: [
+      '# Cleanup candidate',
+      'legacy_shutdown:',
+      '  alias: Legacy Shutdown',
+      '  sequence:',
+      '    - action: light.turn_off',
+      '',
+    ].join('\n'),
+    contentHash: 'hash-scripts',
+    path: 'scripts.yaml',
+  },
+  {
+    content: ['# old notes', '# can be removed', ''].join('\n'),
+    contentHash: 'hash-legacy-empty',
+    path: 'legacy_empty.yaml',
+  },
+];
+
 afterEach(() => {
   for (const directory of temporaryDirectories.splice(0)) {
     rmSync(directory, {
@@ -402,7 +565,7 @@ describe('storage service', () => {
     try {
       expect(
         Number(database.prepare('PRAGMA user_version').get()?.user_version),
-      ).toBe(5);
+      ).toBe(6);
       expect(
         database
           .prepare(
@@ -435,6 +598,17 @@ describe('storage service', () => {
             `,
           )
           .get('scan_workbench_items'),
+      ).toBeDefined();
+      expect(
+        database
+          .prepare(
+            `
+              SELECT name
+              FROM sqlite_master
+              WHERE type = 'table' AND name = ?
+            `,
+          )
+          .get('scan_config_sources'),
       ).toBeDefined();
     } finally {
       database.close();
@@ -871,6 +1045,258 @@ describe('storage service', () => {
     }
   });
 
+  it('keeps config-backed repair findings advisory when a saved scan has no persisted config snapshots', async () => {
+    const dbPath = createTempDatabasePath();
+    const service = await createRepairService({
+      dbPath,
+      inventoryProvider: () => phaseThreeRepairInventory,
+    });
+
+    try {
+      const scan = await service.createScan();
+      const workbench = await service.getScanWorkbench(scan.id);
+
+      expect(
+        workbench.workbench.entries.find(
+          (entry) =>
+            entry.findingId === 'ambiguous_helper_name:input_boolean.mode',
+        ),
+      ).toMatchObject({
+        status: 'advisory',
+        treatment: 'advisory',
+      });
+      expect(
+        workbench.workbench.entries.find(
+          (entry) => entry.findingId === 'unused_script:script.legacy_shutdown',
+        ),
+      ).toMatchObject({
+        status: 'advisory',
+        treatment: 'advisory',
+      });
+
+      await expect(
+        service.saveWorkbenchItem(
+          scan.id,
+          'ambiguous_helper_name:input_boolean.mode',
+          {
+            inputs: [
+              {
+                field: 'name',
+                findingId: 'ambiguous_helper_name:input_boolean.mode',
+                targetId: 'input_boolean.mode',
+                value: 'Office Mode',
+              },
+            ],
+          },
+        ),
+      ).rejects.toMatchObject({
+        code: 'finding_not_stageable',
+        statusCode: 400,
+      });
+
+      await expect(
+        service.previewFixes({
+          findingIds: ['ambiguous_helper_name:input_boolean.mode'],
+          inputs: [
+            {
+              field: 'name',
+              findingId: 'ambiguous_helper_name:input_boolean.mode',
+              targetId: 'input_boolean.mode',
+              value: 'Office Mode',
+            },
+          ],
+          scanId: scan.id,
+        }),
+      ).rejects.toMatchObject({
+        code: 'no_previewable_actions',
+        statusCode: 400,
+      });
+    } finally {
+      await service.close();
+    }
+  });
+
+  it('persists config source snapshots and previews mixed websocket and config patch repair plans', async () => {
+    const dbPath = createTempDatabasePath();
+    const service = await createRepairService({
+      dbPath,
+      scanCollector: async () => ({
+        connection: {
+          capabilities: supportedCapabilities,
+          checkedAt: '2026-03-12T09:00:00.000Z',
+          endpoint: 'http://ha.local:8123',
+          latencyMs: 12,
+          mode: 'mock',
+          ok: true,
+          warnings: [],
+        },
+        configSourceSnapshots: phaseThreeConfigSourceSnapshots,
+        inventory: phaseThreeRepairInventory,
+        notes: [],
+        passes: [
+          {
+            completedAt: '2026-03-12T09:00:00.000Z',
+            durationMs: 1,
+            name: 'connection',
+            startedAt: '2026-03-12T09:00:00.000Z',
+            status: 'completed',
+            summary: 'Connected.',
+          },
+          {
+            completedAt: '2026-03-12T09:00:01.000Z',
+            durationMs: 1,
+            name: 'inventory',
+            startedAt: '2026-03-12T09:00:01.000Z',
+            status: 'completed',
+            summary: 'Loaded inventory.',
+          },
+          {
+            completedAt: '2026-03-12T09:00:02.000Z',
+            durationMs: 1,
+            name: 'config',
+            startedAt: '2026-03-12T09:00:02.000Z',
+            status: 'completed',
+            summary: 'Loaded config snapshots.',
+          },
+        ],
+      }),
+    });
+
+    try {
+      const scan = await service.createScan();
+      expect(scan.capabilities?.configFiles.status).toBe('supported');
+
+      const workbench = await service.getScanWorkbench(scan.id);
+      expect(
+        workbench.workbench.entries.find(
+          (entry) =>
+            entry.findingId === 'ambiguous_helper_name:input_boolean.mode',
+        ),
+      ).toMatchObject({
+        status: 'recommended',
+        treatment: 'actionable',
+      });
+      expect(
+        workbench.workbench.entries.find(
+          (entry) => entry.findingId === 'unused_helper:input_boolean.mode',
+        ),
+      ).toMatchObject({
+        status: 'recommended',
+        treatment: 'actionable',
+      });
+
+      const preview = await service.previewFixes({
+        inputs: [
+          {
+            field: 'name',
+            findingId: 'duplicate_name:Office Lamp:area.office',
+            targetId: 'light.office_lamp',
+            value: 'Office Lamp (light.office_lamp)',
+          },
+          {
+            field: 'name',
+            findingId: 'duplicate_name:Office Lamp:area.office',
+            targetId: 'switch.office_lamp_accent',
+            value: 'Office Lamp (switch.office_lamp_accent)',
+          },
+          {
+            field: 'name',
+            findingId: 'ambiguous_helper_name:input_boolean.mode',
+            targetId: 'input_boolean.mode',
+            value: 'Office Mode',
+          },
+        ],
+        scanId: scan.id,
+      });
+
+      expect(preview.actions.map((action) => action.kind)).toEqual(
+        expect.arrayContaining([
+          'rename_duplicate_name',
+          'review_stale_entity',
+          'rename_ambiguous_helper',
+          'remove_unused_helper',
+          'remove_unused_script',
+          'remove_orphan_config_module',
+        ]),
+      );
+      expect(
+        preview.actions.filter(
+          (action) => action.executionMode === 'config_patch',
+        ),
+      ).toHaveLength(4);
+      const helperRenameAction = preview.actions.find(
+        (action) =>
+          action.findingId === 'ambiguous_helper_name:input_boolean.mode',
+      );
+
+      expect(helperRenameAction).toBeDefined();
+      expect(helperRenameAction?.executionMode).toBe('config_patch');
+      expect(helperRenameAction?.findingContext.evidence).toEqual(
+        expect.any(String),
+      );
+      expect(
+        preview.actions.flatMap((action) =>
+          action.artifacts.map((artifact) => artifact.path),
+        ),
+      ).toEqual(
+        expect.arrayContaining([
+          'input_boolean.yaml',
+          'scripts.yaml',
+          'legacy_empty.yaml',
+        ]),
+      );
+      expect(
+        preview.actions.find(
+          (action) => action.kind === 'rename_ambiguous_helper',
+        )?.artifacts[0]?.content,
+      ).toContain('+++ b/input_boolean.yaml');
+      expect(preview.advisories).toEqual([]);
+
+      const apply = await service.applyFixes({
+        actionIds: preview.selection.actionIds,
+        dryRun: true,
+        previewToken: preview.previewToken,
+        scanId: scan.id,
+      });
+      expect(apply.queue.status).toBe('dry_run_applied');
+
+      const exportBundle = await service.exportScan(scan.id);
+      expect(exportBundle.actions).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            executionMode: 'config_patch',
+            kind: 'remove_unused_helper',
+          }),
+        ]),
+      );
+      expect(renderScanExportMarkdown(exportBundle)).toContain(
+        'Execution mode: config_patch',
+      );
+      expect(renderScanExportMarkdown(exportBundle)).toContain(
+        'Artifact path: input_boolean.yaml',
+      );
+    } finally {
+      await service.close();
+    }
+
+    const database = new DatabaseSync(dbPath);
+
+    try {
+      expect(
+        database
+          .prepare(
+            `
+              SELECT COUNT(*)
+              FROM scan_config_sources
+            `,
+          )
+          .get()?.['COUNT(*)'],
+      ).toBe(3);
+    } finally {
+      database.close();
+    }
+  });
+
   it('returns audit-ready export bundles and markdown reports', async () => {
     const dbPath = createTempDatabasePath();
     const service = await createRepairService({
@@ -915,7 +1341,7 @@ describe('storage service', () => {
       expect(normalizedMarkdown).toContain('Check ID: STALE_ENTITY');
       expect(normalizedMarkdown).toContain('## Fix Actions');
       expect(normalizedMarkdown).toContain(
-        'Commands: No literal Home Assistant payloads generated yet.',
+        'Commands: No reviewed Home Assistant websocket payloads generated yet.',
       );
       expect(normalizedMarkdown).toContain(
         'Definition: A stale entity is present in the registry, but it has no live state or currently reports as unavailable.',

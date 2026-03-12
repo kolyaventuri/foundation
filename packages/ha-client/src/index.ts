@@ -14,7 +14,10 @@ import type {
   ScanNote,
   ScanPassResult,
 } from '@ha-repair/contracts';
-import {analyzeConfigDirectory} from './config-analysis';
+import {
+  analyzeConfigDirectory,
+  type ConfigSourceSnapshot,
+} from './config-analysis';
 
 type WebSocketMessageEventLike = {
   data: string | Uint8Array;
@@ -51,6 +54,7 @@ export type ReadOnlyScanRequest = {
 
 export type CollectedScanData = {
   connection: ConnectionResult;
+  configSourceSnapshots?: ConfigSourceSnapshot[];
   inventory: InventoryGraph;
   notes: ScanNote[];
   passes: ScanPassResult[];
@@ -845,6 +849,7 @@ async function collectMockScanData(
   );
   const notes: ScanNote[] = [];
   let inventory = collectMockInventory();
+  let configAnalysis: ReturnType<typeof analyzeConfigDirectory> | undefined;
   const passes: ScanPassResult[] = [];
   const connectionStartedAt = nowIso();
 
@@ -870,7 +875,7 @@ async function collectMockScanData(
   const configStartedAt = nowIso();
 
   if (request.deep && request.profile?.configPath) {
-    const configAnalysis = analyzeConfigDirectory(request.profile.configPath);
+    configAnalysis = analyzeConfigDirectory(request.profile.configPath);
     inventory = {
       ...inventory,
       automations: configAnalysis.automations,
@@ -919,6 +924,9 @@ async function collectMockScanData(
         endpoint.length > 0 && (request.profile?.token.trim().length ?? 1) > 0,
       warnings: [],
     },
+    ...(configAnalysis
+      ? {configSourceSnapshots: configAnalysis.sourceSnapshots}
+      : {}),
     inventory,
     notes,
     passes,
@@ -1062,6 +1070,9 @@ async function collectLiveScanData(
       ok: true,
       warnings: connectionWarnings,
     },
+    ...(configAnalysis
+      ? {configSourceSnapshots: configAnalysis.sourceSnapshots}
+      : {}),
     inventory,
     notes,
     passes,
@@ -1295,3 +1306,8 @@ export async function createBackupCheckpoint(
 export {normalizeBaseUrl, probeCapabilities};
 
 export {analyzeConfigDirectory} from './config-analysis';
+export type {ConfigSourceSnapshot} from './config-analysis';
+export {
+  removeConfigNamedObject,
+  renameConfigNamedObject,
+} from './config-rewrites';

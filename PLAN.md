@@ -94,7 +94,7 @@ The repo already has meaningful groundwork in place:
 - Phase 2 audit-model expansion for scripts, helpers, templates, config modules, richer finding metadata, conflict candidates, template missing references, ownership hotspots, unused objects, intent clusters, and install-level audit scoring
 - review-oriented dry-run repair flows in the web workbench and CLI
 
-This means the project is not starting from zero. Phase 1 is complete, and the immediate priority is moving deeper into Phase 2 while carrying forward non-blocking hardening work into later phases.
+This means the project is not starting from zero. Phase 1, Phase 2, and Phase 3 are complete, and the immediate priority is moving into Phase 4 enhancement guidance while continuing non-blocking hardening work in Phase 5.
 
 ## Phased roadmap
 
@@ -162,7 +162,17 @@ Exit criteria:
 
 Goal: turn richer audit findings into safer, clearer, more useful repair workflows.
 
-Status: planned
+Status: complete
+
+Checkpoint reached:
+
+- fix planning now uses a mixed repair planner that can emit exact Home Assistant websocket payloads or exact YAML patch plans
+- saved scans now persist optional capability snapshots and deep-scan config source snapshots so reopened scans can rebuild repair previews consistently
+- preview, apply, export, CLI, and web workbench flows now operate on reviewable repair plans rather than assuming every action is a live command
+- repair actions now carry explicit `executionMode`, richer finding context, and file-backed patch artifact paths across contracts, storage, API, CLI, and UI surfaces
+- config-backed repair coverage now includes ambiguous helper rename, unused helper removal, unused script removal, and orphan config module removal as bounded patch-generation flows
+- dry-run apply remains the only supported apply mode, with older scans degrading config-backed fixes into explicit advisories when the required repair context is unavailable
+- regression, migration, storage, CLI, UI, and YAML rewrite coverage now lock the mixed websocket-plus-patch workflow in place
 
 Deliverables:
 
@@ -171,6 +181,11 @@ Deliverables:
 - keep dry-run, export, and patch-oriented flows as the default operator path
 - expand capability-aware repair actions where safe and supportable without weakening the safety contract
 - ensure richer findings remain usable in the existing workbench, preview, and apply lifecycle
+
+Deferred from this phase:
+
+- live mutation of Home Assistant and local config files remains intentionally out of scope; the operator path stays preview-first, export-friendly, and dry-run-only
+- broader enhancement-oriented repair suggestions such as duplicate-pattern consolidation and larger refactor proposals remain Phase 4 work
 
 Exit criteria:
 

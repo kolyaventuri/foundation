@@ -613,9 +613,9 @@ Avoid vague advice and unsupported runtime assumptions. Prefer specific reviewab
 
 ## Implementation order
 
-These phases describe the audit-engine expansion only. They do not replace the repo-level platform status documented in [PLAN.md](../PLAN.md).
+These milestones describe the audit-engine expansion only. They do not replace the repo-level platform status documented in [PLAN.md](../PLAN.md).
 
-### Phase A - Audit foundation
+### Milestone 1 - Audit foundation
 
 Status: complete
 
@@ -625,7 +625,7 @@ Status: complete
 - implement the richer finding schema
 - add the scoring framework
 
-### Phase B - Highest-value deterministic checks
+### Milestone 2 - Highest-value deterministic checks
 
 Status: complete
 
@@ -633,7 +633,7 @@ Status: complete
 - keep checks evidence-backed and serializable
 - expose the results through the existing scan, export, and workbench flow
 
-### Phase C - Smarter reasoning
+### Milestone 3 - Smarter reasoning
 
 Status: deferred to later enhancement work
 
@@ -643,7 +643,7 @@ Status: deferred to later enhancement work
 - add monolithic automation detection
 - add fragmented intent modeling
 
-### Phase D - Audit-driven repair and enhancement
+### Milestone 4 - Audit-driven repair and enhancement
 
 - generate human-readable intent summaries per automation or scene
 - explain duplicate and conflict clusters
