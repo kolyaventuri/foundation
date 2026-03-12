@@ -83,14 +83,14 @@ The repo already has meaningful groundwork in place:
 - deterministic findings for duplicate names, stale entities, orphaned entity/device links, missing area assignments, missing floor assignments, dangling labels, invalid automation targets, invalid scene targets, and assistant exposure bloat
 - review-oriented dry-run repair flows in the web workbench and CLI
 
-This means the project is not starting from zero. Phase 1 is largely in place, and the immediate priority is moving deeper into Phase 2.
+This means the project is not starting from zero. Phase 1 is complete, and the immediate priority is moving deeper into Phase 2 while carrying forward non-blocking hardening work into later phases.
 
 ## Phased roadmap
 
 ### Phase 1 - Local-first platform foundation
 Goal: establish the trustworthy scan, storage, and operator workflow foundation the rest of the product depends on.
 
-Status: largely complete
+Status: complete
 
 Deliverables:
 - stable workspace split across API, web, CLI, scan engine, storage, and shared contracts
@@ -102,6 +102,11 @@ Deliverables:
 
 Exit criteria:
 - operators can run mock or live scans, inspect findings, persist history, export results, and use dry-run repair flows without mutating Home Assistant by default
+
+Additional attention (non-blocking, tracked in later phases):
+- broader live-environment validation across partial-capability and permission-constrained Home Assistant installs
+- deeper regression coverage around scan/export/workbench flows and larger inventories
+- continued operator-doc tightening as live read-only workflows and repair boundaries evolve
 
 ### Phase 2 - Deterministic audit expansion
 Goal: make the audit engine meaningfully smarter about Home Assistant behavior, structure, and maintainability.
