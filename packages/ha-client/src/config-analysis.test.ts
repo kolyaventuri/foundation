@@ -206,4 +206,114 @@ describe('config analysis', () => {
       ]),
     );
   });
+
+  it('extracts phase 2 completion inputs from scripts, templates, and config modules', () => {
+    const configRoot = createTempConfigRoot();
+    const oversizedAutomations = [
+      ...Array.from({length: 12}, (_value, index) => [
+        `- id: office-${index + 1}`,
+        `  alias: Office ${index + 1}`,
+        '  trigger:',
+        '    - platform: state',
+        '      entity_id: binary_sensor.office_motion',
+        '  action:',
+        '    - service: script.turn_on',
+        '      target:',
+        '        entity_id: script.office_cleanup',
+      ]).flat(),
+      ...Array.from({length: 200}, (_value, index) => `# filler ${index + 1}`),
+    ].join('\n');
+
+    writeFileSync(
+      join(configRoot, 'configuration.yaml'),
+      [
+        'automation: !include automations.yaml',
+        'script: !include scripts.yaml',
+        'legacy: !include legacy_empty.yaml',
+        'template:',
+        '  - sensor:',
+        '      - name: Unsafe Office Temperature',
+        '        state: "{{ states.sensor.office_temperature.state }}"',
+      ].join('\n'),
+    );
+    writeFileSync(join(configRoot, 'automations.yaml'), oversizedAutomations);
+    writeFileSync(
+      join(configRoot, 'scripts.yaml'),
+      [
+        'office_cleanup:',
+        '  alias: Office Cleanup',
+        '  sequence:',
+        '    - service: light.turn_on',
+        '      target:',
+        '        entity_id: light.missing_task_light',
+      ].join('\n'),
+    );
+    writeFileSync(
+      join(configRoot, 'legacy_empty.yaml'),
+      [
+        '# legacy notes',
+        '# legacy placeholder',
+        '# legacy include kept for review',
+        '# no live objects',
+        '# still loaded',
+      ].join('\n'),
+    );
+
+    const result = analyzeConfigDirectory(configRoot);
+    const automation = result.automations.find(
+      (candidate) => candidate.automationId === 'automation.office_1',
+    );
+    const script = result.scripts.find(
+      (candidate) => candidate.scriptId === 'script.office_cleanup',
+    );
+    const unsafeTemplate = result.templates.find(
+      (candidate) =>
+        candidate.templateText ===
+        '{{ states.sensor.office_temperature.state }}',
+    );
+    const orphanModule = result.configModules.find(
+      (module) => module.filePath === 'legacy_empty.yaml',
+    );
+    const oversizedModule = result.configModules.find(
+      (module) => module.filePath === 'automations.yaml',
+    );
+
+    expect(automation).toBeDefined();
+    expect(script).toBeDefined();
+    expect(unsafeTemplate).toBeDefined();
+    expect(orphanModule).toBeDefined();
+    expect(oversizedModule).toBeDefined();
+
+    if (
+      !automation ||
+      !script ||
+      !unsafeTemplate ||
+      !orphanModule ||
+      !oversizedModule
+    ) {
+      throw new Error(
+        'Expected extracted phase 2 completion config analysis data',
+      );
+    }
+
+    expect(automation.references?.entityIds).toContain(
+      'binary_sensor.office_motion',
+    );
+    expect(script.targetEntityIds).toEqual(['light.missing_task_light']);
+    expect(unsafeTemplate.sourcePath).toBe('configuration.yaml');
+    expect(unsafeTemplate.templateText).toBe(
+      '{{ states.sensor.office_temperature.state }}',
+    );
+    expect(orphanModule).toMatchObject({
+      automationCount: 0,
+      helperCount: 0,
+      lineCount: 5,
+      objectTypesPresent: [],
+      sceneCount: 0,
+      scriptCount: 0,
+      templateCount: 0,
+    });
+    expect(oversizedModule.automationCount).toBe(12);
+    expect(oversizedModule.lineCount).toBeGreaterThanOrEqual(250);
+  });
 });

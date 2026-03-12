@@ -156,6 +156,119 @@ const changedInventory: InventoryGraph = {
   source: 'mock',
 };
 
+const phaseTwoCompletionInventory: InventoryGraph = {
+  areas: [
+    {
+      areaId: 'area.office',
+      name: 'Office',
+    },
+  ],
+  automations: [
+    {
+      automationId: 'automation.office_watch',
+      name: 'Office Watch',
+      references: {
+        entityIds: ['light.office_disabled'],
+        helperIds: [],
+        sceneIds: [],
+        scriptIds: ['script.office_script'],
+        serviceIds: ['light.turn_on'],
+      },
+      sourcePath: 'automations.yaml',
+      targetEntityIds: ['light.office_active', 'light.office_disabled'],
+    },
+  ],
+  configAnalysis: {
+    files: [],
+    issues: [],
+    loadedFileCount: 0,
+    rootPath: '/config',
+  },
+  configModules: [
+    {
+      automationCount: 12,
+      filePath: 'automations.yaml',
+      helperCount: 0,
+      lineCount: 520,
+      objectTypesPresent: ['automation', 'template'],
+      sceneCount: 0,
+      scriptCount: 0,
+      templateCount: 1,
+    },
+    {
+      automationCount: 0,
+      filePath: 'legacy_empty.yaml',
+      helperCount: 0,
+      lineCount: 8,
+      objectTypesPresent: [],
+      sceneCount: 0,
+      scriptCount: 0,
+      templateCount: 0,
+    },
+  ],
+  devices: [],
+  entities: [
+    {
+      areaId: 'area.office',
+      disabledBy: null,
+      displayName: 'Office Active',
+      entityId: 'light.office_active',
+      isStale: false,
+      name: null,
+    },
+    {
+      areaId: 'area.office',
+      disabledBy: 'user',
+      displayName: 'Office Disabled',
+      entityId: 'light.office_disabled',
+      isStale: false,
+      name: null,
+    },
+    {
+      areaId: 'area.office',
+      disabledBy: null,
+      displayName: 'Office Temperature',
+      entityId: 'sensor.office_temperature',
+      isStale: false,
+      name: null,
+    },
+  ],
+  floors: [],
+  helpers: [],
+  labels: [],
+  scenes: [],
+  scripts: [
+    {
+      name: 'Office Script',
+      references: {
+        entityIds: [],
+        helperIds: [],
+        sceneIds: [],
+        scriptIds: [],
+        serviceIds: ['light.turn_on'],
+      },
+      scriptId: 'script.office_script',
+      sourcePath: 'scripts.yaml',
+      targetEntityIds: ['light.missing_task_light'],
+    },
+  ],
+  source: 'mock',
+  templates: [
+    {
+      entityIds: ['sensor.office_temperature'],
+      helperIds: [],
+      parseValid: true,
+      sceneIds: [],
+      scriptIds: [],
+      sourceObjectId: 'automation.office_watch',
+      sourcePath: 'automations.yaml',
+      sourceType: 'automation',
+      templateId: 'automation:automation.office_watch:action.0.variables.temp',
+      templateText: '{{ states.sensor.office_temperature.state }}',
+    },
+  ],
+};
+
 afterEach(() => {
   for (const directory of temporaryDirectories.splice(0)) {
     rmSync(directory, {
@@ -547,6 +660,64 @@ describe('api server', () => {
       expect(rejectedToken.statusCode).toBe(409);
     } finally {
       await secondServer.close();
+    }
+  });
+
+  it('serializes the new phase 2 finding kinds through scan, findings, and history responses', async () => {
+    const server = await createServer({
+      dbPath: createTempDatabasePath(),
+      inventoryProvider: () => phaseTwoCompletionInventory,
+    });
+
+    try {
+      const scanResponse = await server.inject({
+        method: 'POST',
+        url: '/api/scans',
+      });
+
+      expect(scanResponse.statusCode).toBe(200);
+      const scanBody = parseJson<ScanCreateResponse>(scanResponse.body);
+      expect(scanBody.scan.findings.map((finding) => finding.kind)).toEqual(
+        expect.arrayContaining([
+          'automation_disabled_dependency',
+          'monolithic_config_file',
+          'orphan_config_module',
+          'script_invalid_target',
+          'template_no_unknown_handling',
+        ]),
+      );
+
+      const findingsResponse = await server.inject({
+        method: 'GET',
+        url: `/api/scans/${scanBody.scan.id}/findings`,
+      });
+      expect(findingsResponse.statusCode).toBe(200);
+      const findingsBody = parseJson<ScanFindingsResponse>(
+        findingsResponse.body,
+      );
+      expect(findingsBody.findings).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            kind: 'script_invalid_target',
+          }),
+          expect.objectContaining({
+            kind: 'monolithic_config_file',
+          }),
+        ]),
+      );
+
+      const historyResponse = await server.inject({
+        method: 'GET',
+        url: '/api/history',
+      });
+      expect(historyResponse.statusCode).toBe(200);
+      const historyBody = parseJson<ScanHistoryResponse>(historyResponse.body);
+      expect(historyBody.scans[0]?.audit?.cleanupCandidateCount).toBe(1);
+      expect(historyBody.scans[0]?.audit?.scores.maintainability).toEqual(
+        expect.any(Number),
+      );
+    } finally {
+      await server.close();
     }
   });
 

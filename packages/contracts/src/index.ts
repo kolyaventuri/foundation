@@ -10,6 +10,7 @@ export type FindingSeverity = 'low' | 'medium' | 'high';
 export type FindingCategory =
   | 'broken_references'
   | 'conflict_overlap'
+  | 'configuration_smells'
   | 'dead_legacy_objects'
   | 'fragile_automation_patterns'
   | 'inventory_hygiene'
@@ -17,6 +18,7 @@ export type FindingCategory =
 export type FindingKind =
   | 'ambiguous_helper_name'
   | 'assistant_context_bloat'
+  | 'automation_disabled_dependency'
   | 'automation_invalid_target'
   | 'dangling_label_reference'
   | 'duplicate_name'
@@ -25,11 +27,15 @@ export type FindingKind =
   | 'likely_conflicting_controls'
   | 'missing_area_assignment'
   | 'missing_floor_assignment'
+  | 'monolithic_config_file'
+  | 'orphan_config_module'
   | 'orphaned_entity_device'
   | 'scene_invalid_target'
+  | 'script_invalid_target'
   | 'shared_label_observation'
   | 'stale_entity'
   | 'template_missing_reference'
+  | 'template_no_unknown_handling'
   | 'unused_helper'
   | 'unused_scene'
   | 'unused_script';
@@ -579,6 +585,15 @@ const findingDefinitions = {
     whyItMatters:
       'Each extra surface adds naming, routine, troubleshooting, and privacy overhead. If an entity only needs to exist in one or two assistants, the rest is usually noise.',
   },
+  automation_disabled_dependency: {
+    definition:
+      'An automation disabled dependency means the automation still references an entity that is currently disabled in the entity registry.',
+    label: 'Disabled dependencies',
+    operatorGuidance:
+      'Review whether the disabled entity should be re-enabled, replaced, or removed from the automation, then rerun the scan.',
+    whyItMatters:
+      'Automations that still depend on disabled entities are prone to stale behavior and silent failures when those references never become valid again.',
+  },
   automation_invalid_target: {
     definition:
       'An automation invalid target means the automation still references an entity that is missing from the current Home Assistant inventory.',
@@ -651,6 +666,24 @@ const findingDefinitions = {
     whyItMatters:
       'Floor-aware dashboards and targeting depend on correct level context, especially in multi-story homes.',
   },
+  monolithic_config_file: {
+    definition:
+      'A monolithic config file is a large Home Assistant YAML module whose size or extracted object count makes deterministic review and repair riskier.',
+    label: 'Monolithic config',
+    operatorGuidance:
+      'Review whether the file should be split by intent, room, or object type so future repairs stay easier to inspect.',
+    whyItMatters:
+      'Oversized config files are harder to review safely, which increases the chance that repairs and refactors carry hidden side effects.',
+  },
+  orphan_config_module: {
+    definition:
+      'An orphan config module is a non-root YAML file that currently contributes no extracted automations, scenes, scripts, helpers, or templates.',
+    label: 'Orphan config',
+    operatorGuidance:
+      'Review whether the file is obsolete, placeholder-only, or commented-out legacy content before removing or archiving it.',
+    whyItMatters:
+      'Dead config fragments add maintenance noise and make it harder to tell which files still shape live Home Assistant behavior.',
+  },
   orphaned_entity_device: {
     definition:
       'An orphaned entity/device link means the entity registry entry still points at a device ID that no longer exists in the device registry.',
@@ -668,6 +701,15 @@ const findingDefinitions = {
       'Open the scene definition, repair or remove the missing entity references, and rerun the scan.',
     whyItMatters:
       'Broken scene membership changes what a scene controls and can leave activations incomplete or misleading.',
+  },
+  script_invalid_target: {
+    definition:
+      'A script invalid target means the script still references an entity target that is missing from the current Home Assistant inventory.',
+    label: 'Script targets',
+    operatorGuidance:
+      'Open the script definition, repair or remove the missing entity references, and rerun the scan.',
+    whyItMatters:
+      'Broken script targets can propagate stale behavior into the automations and manual routines that call the script.',
   },
   shared_label_observation: {
     definition:
@@ -695,6 +737,15 @@ const findingDefinitions = {
       'Open the template source, repair or remove the missing references, and rerun the scan.',
     whyItMatters:
       'Broken template references can silently produce wrong logic, fallback values, or brittle runtime behavior that is hard to trace later.',
+  },
+  template_no_unknown_handling: {
+    definition:
+      'A template without unknown handling accesses entity state or attributes directly without visible guards for unknown or unavailable values.',
+    label: 'Template guards',
+    operatorGuidance:
+      'Wrap direct state access in Home Assistant-safe guards such as states(), state_attr(), has_value(), or explicit default handling, then rerun the scan.',
+    whyItMatters:
+      'Direct template access can fail or produce brittle runtime behavior when entities are unavailable, unknown, or still starting up.',
   },
   unused_helper: {
     definition:
@@ -759,43 +810,16 @@ export function getFixActionDefinition(
   return fixActionDefinitions[kind];
 }
 
+const findingActionKinds = new Map<FindingKind, FixActionKind>([
+  ['assistant_context_bloat', 'review_assistant_exposure'],
+  ['duplicate_name', 'rename_duplicate_name'],
+  ['stale_entity', 'review_stale_entity'],
+]);
+
 export function getFindingActionKind(
   kind: FindingKind,
 ): FixActionKind | undefined {
-  switch (kind) {
-    case 'duplicate_name': {
-      return 'rename_duplicate_name';
-    }
-
-    case 'assistant_context_bloat': {
-      return 'review_assistant_exposure';
-    }
-
-    case 'stale_entity': {
-      return 'review_stale_entity';
-    }
-
-    case 'ambiguous_helper_name':
-    case 'automation_invalid_target':
-    case 'dangling_label_reference':
-    case 'entity_ownership_hotspot':
-    case 'highly_coupled_automation':
-    case 'likely_conflicting_controls':
-    case 'missing_area_assignment':
-    case 'missing_floor_assignment':
-    case 'orphaned_entity_device':
-    case 'scene_invalid_target':
-    case 'shared_label_observation': {
-      return undefined;
-    }
-
-    case 'template_missing_reference':
-    case 'unused_helper':
-    case 'unused_scene':
-    case 'unused_script': {
-      return undefined;
-    }
-  }
+  return findingActionKinds.get(kind);
 }
 
 export type FixRisk = 'low' | 'medium' | 'high';

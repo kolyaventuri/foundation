@@ -2,9 +2,14 @@ import {mkdtempSync, rmSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import process from 'node:process';
-import type {FixApplyResponse, FixPreviewResponse} from '@ha-repair/contracts';
+import type {
+  FixApplyResponse,
+  FixPreviewResponse,
+  InventoryGraph,
+} from '@ha-repair/contracts';
 import {afterEach, describe, expect, it} from 'vitest';
 import {createLiveHomeAssistantMocks} from '../../../test/live-home-assistant';
+import {createRepairService} from '../../storage/src';
 import {buildProgram} from './index';
 
 const temporaryDirectories: string[] = [];
@@ -80,6 +85,134 @@ async function withLiveHomeAssistantGlobals<T>(callback: () => Promise<T>) {
     } else {
       Reflect.deleteProperty(globalThis, 'WebSocket');
     }
+  }
+}
+
+const phaseTwoCompletionInventory: InventoryGraph = {
+  areas: [
+    {
+      areaId: 'area.office',
+      name: 'Office',
+    },
+  ],
+  automations: [
+    {
+      automationId: 'automation.office_watch',
+      name: 'Office Watch',
+      references: {
+        entityIds: ['light.office_disabled'],
+        helperIds: [],
+        sceneIds: [],
+        scriptIds: ['script.office_script'],
+        serviceIds: ['light.turn_on'],
+      },
+      sourcePath: 'automations.yaml',
+      targetEntityIds: ['light.office_active', 'light.office_disabled'],
+    },
+  ],
+  configAnalysis: {
+    files: [],
+    issues: [],
+    loadedFileCount: 0,
+    rootPath: '/config',
+  },
+  configModules: [
+    {
+      automationCount: 12,
+      filePath: 'automations.yaml',
+      helperCount: 0,
+      lineCount: 520,
+      objectTypesPresent: ['automation', 'template'],
+      sceneCount: 0,
+      scriptCount: 0,
+      templateCount: 1,
+    },
+    {
+      automationCount: 0,
+      filePath: 'legacy_empty.yaml',
+      helperCount: 0,
+      lineCount: 8,
+      objectTypesPresent: [],
+      sceneCount: 0,
+      scriptCount: 0,
+      templateCount: 0,
+    },
+  ],
+  devices: [],
+  entities: [
+    {
+      areaId: 'area.office',
+      disabledBy: null,
+      displayName: 'Office Active',
+      entityId: 'light.office_active',
+      isStale: false,
+      name: null,
+    },
+    {
+      areaId: 'area.office',
+      disabledBy: 'user',
+      displayName: 'Office Disabled',
+      entityId: 'light.office_disabled',
+      isStale: false,
+      name: null,
+    },
+    {
+      areaId: 'area.office',
+      disabledBy: null,
+      displayName: 'Office Temperature',
+      entityId: 'sensor.office_temperature',
+      isStale: false,
+      name: null,
+    },
+  ],
+  floors: [],
+  helpers: [],
+  labels: [],
+  scenes: [],
+  scripts: [
+    {
+      name: 'Office Script',
+      references: {
+        entityIds: [],
+        helperIds: [],
+        sceneIds: [],
+        scriptIds: [],
+        serviceIds: ['light.turn_on'],
+      },
+      scriptId: 'script.office_script',
+      sourcePath: 'scripts.yaml',
+      targetEntityIds: ['light.missing_task_light'],
+    },
+  ],
+  source: 'mock',
+  templates: [
+    {
+      entityIds: ['sensor.office_temperature'],
+      helperIds: [],
+      parseValid: true,
+      sceneIds: [],
+      scriptIds: [],
+      sourceObjectId: 'automation.office_watch',
+      sourcePath: 'automations.yaml',
+      sourceType: 'automation',
+      templateId: 'automation:automation.office_watch:action.0.variables.temp',
+      templateText: '{{ states.sensor.office_temperature.state }}',
+    },
+  ],
+};
+
+async function seedScan(dbPath: string, inventory: InventoryGraph) {
+  const service = await createRepairService({
+    dbPath,
+    inventoryProvider: () => inventory,
+  });
+
+  try {
+    return await service.createScan({
+      mode: 'mock',
+    });
+  } finally {
+    await service.close();
   }
 }
 
@@ -334,5 +467,38 @@ describe('cli', () => {
 
     const finalListResult = await runCliCommand(['connect', 'list'], dbPath);
     expect(JSON.parse(finalListResult.stdout)).toEqual([]);
+  });
+
+  it('renders the new phase 2 finding kinds through findings and export output', async () => {
+    const dbPath = createTempDatabasePath();
+    const seededScan = await seedScan(dbPath, phaseTwoCompletionInventory);
+
+    const findingsResult = await runCliCommand(
+      ['findings', seededScan.id],
+      dbPath,
+    );
+    expect(findingsResult.exitCode).toBe(0);
+    expect(findingsResult.stdout).toContain('script_invalid_target');
+    expect(findingsResult.stdout).toContain('automation_disabled_dependency');
+    expect(findingsResult.stdout).toContain('template_no_unknown_handling');
+    expect(findingsResult.stdout).toContain('orphan_config_module');
+    expect(findingsResult.stdout).toContain('monolithic_config_file');
+
+    const findingsMarkdownResult = await runCliCommand(
+      ['findings', seededScan.id, '--format', 'md'],
+      dbPath,
+    );
+    expect(findingsMarkdownResult.exitCode).toBe(0);
+    expect(findingsMarkdownResult.stdout).toContain('Script targets');
+    expect(findingsMarkdownResult.stdout).toContain('Disabled dependencies');
+    expect(findingsMarkdownResult.stdout).toContain('Template guards');
+
+    const exportMarkdownResult = await runCliCommand(
+      ['export', seededScan.id, '--format', 'md'],
+      dbPath,
+    );
+    expect(exportMarkdownResult.exitCode).toBe(0);
+    expect(exportMarkdownResult.stdout).toContain('orphan_config_module');
+    expect(exportMarkdownResult.stdout).toContain('monolithic_config_file');
   });
 });

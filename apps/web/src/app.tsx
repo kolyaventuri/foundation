@@ -107,7 +107,7 @@ const statusToneClasses = {
   running: 'border-ink-strong/10 bg-ink-strong/8 text-ink-soft',
 } as const;
 
-const findingKindFilterOptions = [
+export const findingKindFilterOptions = [
   {
     label: getFindingDefinition('ambiguous_helper_name').label,
     value: 'ambiguous_helper_name',
@@ -115,6 +115,10 @@ const findingKindFilterOptions = [
   {
     label: getFindingDefinition('assistant_context_bloat').label,
     value: 'assistant_context_bloat',
+  },
+  {
+    label: getFindingDefinition('automation_disabled_dependency').label,
+    value: 'automation_disabled_dependency',
   },
   {
     label: getFindingDefinition('automation_invalid_target').label,
@@ -149,8 +153,20 @@ const findingKindFilterOptions = [
     value: 'missing_floor_assignment',
   },
   {
+    label: getFindingDefinition('monolithic_config_file').label,
+    value: 'monolithic_config_file',
+  },
+  {
+    label: getFindingDefinition('orphan_config_module').label,
+    value: 'orphan_config_module',
+  },
+  {
     label: getFindingDefinition('scene_invalid_target').label,
     value: 'scene_invalid_target',
+  },
+  {
+    label: getFindingDefinition('script_invalid_target').label,
+    value: 'script_invalid_target',
   },
   {
     label: getFindingDefinition('shared_label_observation').label,
@@ -163,6 +179,10 @@ const findingKindFilterOptions = [
   {
     label: getFindingDefinition('template_missing_reference').label,
     value: 'template_missing_reference',
+  },
+  {
+    label: getFindingDefinition('template_no_unknown_handling').label,
+    value: 'template_no_unknown_handling',
   },
   {
     label: getFindingDefinition('unused_helper').label,

@@ -1,6 +1,7 @@
 # Home Assistant Audit, Repair, and Enhance Plan
 
 ## Product direction
+
 Build a Docker-first, standalone, local-first TypeScript app with two operator surfaces:
 
 - a local web UI for guided review, repair, and improvement
@@ -15,16 +16,19 @@ The product is organized around three equal pillars:
 Deterministic checks remain the source of truth. Scan history stays local in SQLite. LLM usage stays optional and non-authoritative.
 
 ## Guiding principles
+
 - **Methodical first**: every finding needs reproducible evidence and deterministic logic.
 - **Trust before writes**: fixes stay read-only until the user explicitly selects and confirms them after review.
 - **Capability-aware**: older Home Assistant installs must degrade gracefully with explicit skipped checks.
 - **Local-first**: no SaaS dependency for core functionality.
 
 ## Active implementation specs
+
 - [docs/home-assistant-audit-utility.md](./docs/home-assistant-audit-utility.md): detailed audit-engine expansion plan, including target schemas, checks, clustering, and summary outputs
 - [docs/running-with-home-assistant.md](./docs/running-with-home-assistant.md): operator guide for running the current live read-only workflow against a real Home Assistant instance
 
 ## Safety contract
+
 - Findings are read-only and advisory by default across both the web UI and the CLI.
 - Scans, discovery, and history views must never mutate Home Assistant state.
 - Users must be able to pick individual fixes explicitly; no implicit or background apply flow is allowed.
@@ -34,15 +38,18 @@ Deterministic checks remain the source of truth. Scan history stays local in SQL
 - Prefer export, patch, or dry-run workflows over live mutation whenever possible.
 
 ## v1 product goals
+
 - Deliver a local-first scan and history workflow over Home Assistant inventory plus optional read-only config analysis.
 - Expand audit coverage from basic hygiene checks into design, correctness, conflict, dead-object, and fragility analysis.
 - Turn findings into reviewable repair workflows without weakening the preview-first safety model.
 - Produce enhancement guidance that helps operators consolidate logic, reduce drift, and improve maintainability over time.
 
 ## Stable interfaces and anchors
+
 Current operator surfaces should stay stable while scan depth grows.
 
 ### CLI
+
 - `ha-repair connect test`
 - `ha-repair scan [--profile] [--mode mock|live] [--deep] [--llm-provider]`
 - `ha-repair checkpoint [scan-id] [--download]`
@@ -51,6 +58,7 @@ Current operator surfaces should stay stable while scan depth grows.
 - `ha-repair export [scan-id] [--format md|json]`
 
 ### Local API
+
 - `POST /api/profiles/test`
 - `POST /api/scans`
 - `GET /api/scans/:id`
@@ -62,6 +70,7 @@ Current operator surfaces should stay stable while scan depth grows.
 - `GET /api/history`
 
 ### Shared contract anchors
+
 - `ConnectionProfile`
 - `CapabilitySet`
 - `InventoryGraph`
@@ -74,6 +83,7 @@ Current operator surfaces should stay stable while scan depth grows.
 The detailed audit spec expands scan content, not command names or route shapes.
 
 ## Current baseline
+
 The repo already has meaningful groundwork in place:
 
 - workspace structure across `apps/web`, `apps/api`, and shared packages for `ha-client`, `scan-engine`, `contracts`, `storage`, `llm`, and `cli`
@@ -89,11 +99,13 @@ This means the project is not starting from zero. Phase 1 is complete, and the i
 ## Phased roadmap
 
 ### Phase 1 - Local-first platform foundation
+
 Goal: establish the trustworthy scan, storage, and operator workflow foundation the rest of the product depends on.
 
 Status: complete
 
 Deliverables:
+
 - stable workspace split across API, web, CLI, scan engine, storage, and shared contracts
 - mock and live read-only scan modes with capability-aware connection handling
 - persisted scan history, fingerprints, notes, diff summaries, and backup checkpoint support
@@ -102,48 +114,58 @@ Deliverables:
 - preview-first repair workflow primitives that keep live mutation conservative
 
 Exit criteria:
+
 - operators can run mock or live scans, inspect findings, persist history, export results, and use dry-run repair flows without mutating Home Assistant by default
 
 Additional attention (non-blocking, tracked in later phases):
+
 - broader live-environment validation across partial-capability and permission-constrained Home Assistant installs
 - deeper regression coverage around scan/export/workbench flows and larger inventories
 - continued operator-doc tightening as live read-only workflows and repair boundaries evolve
 
 ### Phase 2 - Deterministic audit expansion
+
 Goal: make the audit engine meaningfully smarter about Home Assistant behavior, structure, and maintainability.
 
-Status: active phase
+Status: complete
 
 Checkpoint reached:
+
 - normalized scan coverage now includes scripts, helpers, templates, config modules, and relationship-derived writer profiles
 - findings now carry richer audit metadata such as categories, confidence, structured evidence details, recommendations, scores, tags, and related object context
-- deterministic checks now cover ambiguous helper names, unused helpers/scenes/scripts, ownership hotspots, highly coupled automations, likely conflicting controls, and template missing references
+- deterministic checks now cover ambiguous helper names, unused helpers/scenes/scripts, ownership hotspots, highly coupled automations, likely conflicting controls, template missing references, script invalid targets, automation disabled dependencies, template unknown-handling gaps, orphan config modules, and monolithic config files
 - audit summaries now persist install-level scores, cleanup candidate IDs, conflict candidate IDs, conflict hotspots, and intent clusters
 - markdown exports include the richer audit summary, and the web workbench now surfaces an audit overview with scores, conflict hotspots, and intent clusters
 - lightweight audit digests now flow through CLI scan output, API history responses, and saved-scan cards so operators can compare scan posture without opening each workbench
 - the web workbench audit overview now includes direct shortcuts into cleanup, conflict, ownership, and cluster-related finding slices instead of remaining a passive summary surface
+- graph-heavy synthetic coverage now locks stable findings, conflict-candidate, ownership-hotspot, and intent-cluster counts across larger inventories
+- the scan engine is now split into shared, clustering, findings, and remedies modules, clearing the Phase 2-related complexity warnings from the previous monolith
 
 Deliverables:
+
 - expand the normalized scan model beyond entities, automations, and scenes to include scripts, helpers, templates, config modules, and graph-derived relationships
 - evolve findings from the current minimal shape into richer audit records with categories, confidence, structured evidence, recommendations, scores, tags, and related findings
 - ship the next high-value deterministic checks from the audit spec, especially broken references, unused objects, ownership hotspots, likely conflicts, ambiguous helper names, and highly coupled automations
 - add install-level scores, cleanup candidates, conflict hotspots, and early intent-cluster outputs while keeping compatibility with the current scan/history/workbench flow
 - improve fixture coverage and performance for larger Home Assistant inventories
 
-Immediate next slice:
-- keep adding deterministic checks from the audit spec while tightening fixture coverage around larger inventories and graph-heavy scans
-- reduce scan-engine complexity in the new clustering/conflict code as follow-up cleanup rather than blocking current behavior
-- keep tightening operator affordances around the richer audit model, especially where summary-level signals should link directly into review and repair decisions
+Deferred from this phase:
+
+- duplicate-service-pattern detection, semantic duplicate naming beyond the current duplicate/shared-label logic, fragmented-intent modeling, and AI prioritization remain Phase 4 work
+- no new repair actions were added in Phase 2; additional repair workflow expansion moves to Phase 3
 
 Exit criteria:
+
 - the system can explain not only what is present, but where logic is brittle, duplicated, conflicting, stale, or structurally risky
 
 ### Phase 3 - Repair workflow hardening
+
 Goal: turn richer audit findings into safer, clearer, more useful repair workflows.
 
 Status: planned
 
 Deliverables:
+
 - align fix planning and preview generation to the richer audit finding model
 - preserve explicit operator review for every repair path, including exact intent, target set, and risk framing
 - keep dry-run, export, and patch-oriented flows as the default operator path
@@ -151,28 +173,34 @@ Deliverables:
 - ensure richer findings remain usable in the existing workbench, preview, and apply lifecycle
 
 Exit criteria:
+
 - operators can move from finding to reviewable repair plan with clear evidence and bounded scope, without needing to infer the intended fix themselves
 
 ### Phase 4 - Enhancement and refactor guidance
+
 Goal: help operators improve architecture and maintainability, not only repair defects.
 
 Status: planned
 
 Deliverables:
+
 - add smarter intent clustering, duplicate-pattern detection, semantic naming analysis, and fragmented-intent detection
 - generate cleanup and refactor opportunities such as consolidating duplicate logic, splitting monolithic automations, and renaming ambiguous helpers
 - keep enhancement output evidence-backed and reviewable rather than vague or speculative
 - use optional AI enrichment only to summarize and prioritize deterministic findings, not to replace them
 
 Exit criteria:
+
 - the product can show not just what is broken, but what should be simplified, renamed, consolidated, or restructured to reduce future maintenance cost
 
 ### Phase 5 - Product hardening and release readiness
+
 Goal: make the full audit/repair/enhance loop reliable enough for sustained real-world use.
 
 Status: planned
 
 Deliverables:
+
 - deepen regression coverage across scan lifecycle, findings retrieval, checkpoint flows, preview/apply paths, exports, and UI rendering
 - validate partial-registry failures, permission denial, config include edge cases, and degraded-capability installs
 - complete performance work for larger inventories and deeper audit graphs
@@ -180,9 +208,11 @@ Deliverables:
 - tighten docs and operator guidance around live read-only workflows and supported repair boundaries
 
 Exit criteria:
+
 - the product is consistent, well-tested, performant on realistic Home Assistant installs, and clear about supported audit and repair behavior
 
 ## Validation strategy
+
 - Run scans against mocked Home Assistant fixtures and live read-only environments.
 - Add focused tests for capability probing, partial registry failures, config include resolution, permission denial, and root-bounded traversal.
 - Verify deterministic findings and future audit graph outputs with fixture-based rule tests.
@@ -191,6 +221,7 @@ Exit criteria:
 - Ensure enrichment changes metadata only and never changes deterministic findings.
 
 ## Assumptions
+
 - v1 remains single-user and local-only.
 - Some Home Assistant capabilities may be absent and should render as skipped rather than failing the scan.
 - YAML/config analysis requires optional read-only config directory access.

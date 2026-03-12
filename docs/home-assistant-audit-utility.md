@@ -1,14 +1,15 @@
 # Home Assistant Audit Utility Implementation Spec
 
 ## Current baseline vs target model
+
 This repo already ships a working audit and repair foundation:
 
 - live read-only scans over Home Assistant REST + WebSocket
 - persisted `ScanRun` records with passes, notes, fingerprints, enrichment metadata, and optional backup checkpoints
-- deterministic findings for naming collisions, stale entities, orphaned links, area/floor/label hygiene, invalid automation/scene targets, and assistant exposure bloat
+- deterministic findings for naming collisions, stale entities, orphaned links, area/floor/label hygiene, invalid automation/scene/script targets, assistant exposure bloat, disabled automation dependencies, template guard gaps, unused objects, ownership hotspots, likely conflicts, and limited config-structure smells
 - web and CLI workbench flows that review findings and support dry-run repair workflows
 
-This document describes the next expansion of that foundation. It is a target-state audit spec, not a claim that every schema or check below is already implemented.
+Phase 2 of that expansion is now shipped. This document still includes target-state notes for later phases, but anything described as planned or deferred below should be read as forward-looking rather than already implemented.
 
 The audit layer should extend the current platform, not replace it:
 
@@ -17,6 +18,7 @@ The audit layer should extend the current platform, not replace it:
 - audit findings feed later repair and enhancement experiences rather than redefining the product as audit-only
 
 ## Purpose
+
 Build an AI-assisted audit layer on top of the existing Home Assistant scanner that analyzes:
 
 - entities
@@ -30,6 +32,7 @@ Build an AI-assisted audit layer on top of the existing Home Assistant scanner t
 The system should prioritize actionable design and correctness issues, not only cleanup. It should identify brittle logic, duplicate intent, dead objects, semantic drift, and architectural smells.
 
 ### Primary goals
+
 - Detect broken or risky automation and config patterns.
 - Surface likely conflicts and duplicate logic.
 - Identify unused, orphaned, or legacy objects.
@@ -38,6 +41,7 @@ The system should prioritize actionable design and correctness issues, not only 
 - Provide enough structure for deterministic checks now and AI summarization later.
 
 ### Non-goals for this phase
+
 - runtime telemetry analysis
 - disaster simulation
 - backup verification
@@ -46,9 +50,11 @@ The system should prioritize actionable design and correctness issues, not only 
 - restore workflows
 
 ## Supported inputs
+
 Current shared contracts are intentionally lean. The audit engine should expand them into richer normalized scan inputs while preserving serializable outputs.
 
 ### Entities
+
 Current baseline:
 
 - `entityId`
@@ -77,6 +83,7 @@ Planned normalized fields:
 - `state_class` and `device_class` when available
 
 ### Automations
+
 Current baseline:
 
 - `automationId`
@@ -103,6 +110,7 @@ Planned normalized fields:
 - extracted helpers, scripts, and scenes referenced
 
 ### Scenes
+
 Current baseline:
 
 - `sceneId`
@@ -120,6 +128,7 @@ Planned normalized fields:
 - activation references from automations, scripts, and dashboards when detectable
 
 ### Scripts
+
 Planned normalized fields:
 
 - `entity_id`
@@ -130,6 +139,7 @@ Planned normalized fields:
 - entity, service, and template references
 
 ### Helpers
+
 Planned helper coverage includes:
 
 - `input_boolean`
@@ -150,6 +160,7 @@ Planned normalized fields:
 - references from automations, scenes, scripts, and templates
 
 ### Templates
+
 Planned template sources:
 
 - template entities
@@ -170,6 +181,7 @@ Planned normalized fields:
 - parse validity when available
 
 ### Config modules
+
 Current baseline already includes `ConfigAnalysis` summaries and issues. Planned audit normalization expands that into:
 
 - `file_path`
@@ -180,6 +192,7 @@ Current baseline already includes `ConfigAnalysis` summaries and issues. Planned
 - counts of automations, scenes, scripts, helpers, and templates per file
 
 ## Core concepts
+
 - **Audit object**: any analyzable entity, automation, scene, script, helper, template, or config module.
 - **Check**: a deterministic or AI-assisted rule that evaluates one or more audit objects and produces findings.
 - **Finding**: a structured issue, warning, or recommendation produced by a check.
@@ -187,9 +200,11 @@ Current baseline already includes `ConfigAnalysis` summaries and issues. Planned
 - **Ownership hotspot**: an entity targeted by many automations, scenes, or scripts, especially in overlapping contexts.
 
 ## Normalized model and relationship graph
+
 The current `InventoryGraph` should evolve into a graph-friendly normalized model used internally by the scan engine.
 
 ### Planned normalized object shape
+
 ```json
 {
   "id": "automation.bedtime_lights",
@@ -198,7 +213,10 @@ The current `InventoryGraph` should evolve into a graph-friendly normalized mode
   "enabled": true,
   "source_file": "automations/bedroom.yaml",
   "references": {
-    "entities_read": ["binary_sensor.bedroom_motion", "input_boolean.sleep_mode"],
+    "entities_read": [
+      "binary_sensor.bedroom_motion",
+      "input_boolean.sleep_mode"
+    ],
     "entities_written": ["light.bedroom_lamps"],
     "scripts_called": ["script.goodnight_announce"],
     "scenes_activated": ["scene.bedroom_night"],
@@ -217,6 +235,7 @@ The current `InventoryGraph` should evolve into a graph-friendly normalized mode
 ```
 
 ### Planned graph edges
+
 - `READS`
 - `WRITES`
 - `CALLS_SCRIPT`
@@ -231,9 +250,11 @@ The current `InventoryGraph` should evolve into a graph-friendly normalized mode
 This graph should support deterministic checks first. Embedding-based similarity can be layered in later without becoming a hard dependency.
 
 ## Public interface and contract notes
+
 No command or endpoint rename is planned for this audit expansion.
 
 ### CLI surface remains stable
+
 - `ha-repair connect test`
 - `ha-repair scan [--profile] [--mode mock|live] [--deep] [--llm-provider]`
 - `ha-repair checkpoint [scan-id] [--download]`
@@ -242,6 +263,7 @@ No command or endpoint rename is planned for this audit expansion.
 - `ha-repair export [scan-id] [--format md|json]`
 
 ### API surface remains stable
+
 - `POST /api/profiles/test`
 - `POST /api/scans`
 - `GET /api/scans/:id`
@@ -253,11 +275,13 @@ No command or endpoint rename is planned for this audit expansion.
 - `GET /api/history`
 
 ### Planned contract evolution
+
 - `InventoryGraph` expands beyond entities, automations, and scenes to also cover scripts, helpers, templates, config modules, and derived relationships.
 - `Finding` expands from the current minimal record (`id`, `kind`, `severity`, `title`, `evidence`, `objectIds`) into a richer audit record.
 - `ScanRun` output grows category scores, clusters, cleanup candidates, and refactor recommendations while still fitting the existing scan and workbench lifecycle.
 
 ## Finding schema and scoring
+
 The current finding shape is intentionally small. The audit layer should evolve toward the following planned structure:
 
 ```json
@@ -298,6 +322,7 @@ The current finding shape is intentionally small. The audit layer should evolve 
 ```
 
 ### Planned per-object subscores
+
 - `fragility`
 - `noise`
 - `clarity`
@@ -305,6 +330,7 @@ The current finding shape is intentionally small. The audit layer should evolve 
 - `redundancy`
 
 ### Planned install-level scores
+
 - `correctness`
 - `maintainability`
 - `clarity`
@@ -312,12 +338,14 @@ The current finding shape is intentionally small. The audit layer should evolve 
 - `cleanup_opportunity`
 
 ### Severity guidance
+
 - `critical`: likely broken core logic, invalid service-target combinations, or missing references in control paths
 - `high`: likely automation conflict, missing dependency in an active automation, or highly brittle central logic
 - `medium`: duplicate logic, naming ambiguity, missing hysteresis, or unused-but-risky legacy objects
 - `low`: style inconsistency, refactor opportunities, monolithic files, or probable stale configs with limited impact
 
 ## Audit categories
+
 The first full audit pass should group findings into these categories:
 
 1. Broken References
@@ -328,11 +356,14 @@ The first full audit pass should group findings into these categories:
 6. Configuration Smells
 
 Configuration Smells can remain a stretch category if initial delivery pressure requires focusing on the first five.
+That stretch no longer applies to Phase 2: the shipped deterministic set now includes `ORPHAN_CONFIG_MODULE` and `MONOLITHIC_CONFIG_FILE`, while broader smell detection remains deferred.
 
 ## Check catalog
+
 Checks should ship in waves, but the target catalog is:
 
 ### Broken References
+
 - `AUTOMATION_MISSING_REFERENCE`
 - `AUTOMATION_DISABLED_DEPENDENCY`
 - `SCRIPT_MISSING_REFERENCE`
@@ -341,12 +372,14 @@ Checks should ship in waves, but the target catalog is:
 - `INVALID_SERVICE_TARGET_COMBINATION`
 
 ### Conflict and Overlap
+
 - `ENTITY_OWNERSHIP_HOTSPOT`
 - `LIKELY_AUTOMATION_CONFLICT`
 - `SCENE_OVERLAP_HIGH`
 - `DUPLICATE_SERVICE_PATTERN`
 
 ### Dead or Legacy Objects
+
 - `UNUSED_HELPER`
 - `UNUSED_SCENE`
 - `UNUSED_SCRIPT`
@@ -355,12 +388,14 @@ Checks should ship in waves, but the target catalog is:
 - `ORPHAN_CONFIG_MODULE`
 
 ### Naming and Intent Drift
+
 - `AMBIGUOUS_HELPER_NAME`
 - `SEMANTIC_DUPLICATE_NAMING`
 - `MISLEADING_ALIAS`
 - `INCONSISTENT_NAMING_CONVENTION`
 
 ### Fragile Automation Patterns
+
 - `BROAD_STATE_TRIGGER`
 - `NOISY_ATTRIBUTE_TRIGGER`
 - `THRESHOLD_NO_HYSTERESIS`
@@ -372,29 +407,38 @@ Checks should ship in waves, but the target catalog is:
 - `MISSING_IDEMPOTENCY_GUARD`
 
 ### Configuration Smells
+
 - `MONOLITHIC_CONFIG_FILE`
 - `COPY_PASTE_CLUSTER`
 - `FRAGMENTED_INTENT_MODELING`
 - `MAGIC_VALUE_SPREAD`
 
-### Recommended first delivery set
-The strongest first expansion on top of the current repo baseline is:
+### Phase 2 shipped set
+
+The current shipped deterministic audit set on top of the original repo baseline is:
 
 - `AUTOMATION_MISSING_REFERENCE`
+- `AUTOMATION_DISABLED_DEPENDENCY`
 - `SCRIPT_MISSING_REFERENCE`
 - `SCENE_TARGET_MISSING_ENTITY`
 - `UNUSED_HELPER`
 - `UNUSED_SCRIPT`
 - `UNUSED_SCENE`
+- `ORPHAN_CONFIG_MODULE`
 - `ENTITY_OWNERSHIP_HOTSPOT`
-- `LIKELY_AUTOMATION_CONFLICT`
+- `LIKELY_CONFLICTING_CONTROLS`
 - `AMBIGUOUS_HELPER_NAME`
+- `TEMPLATE_MISSING_REFERENCE`
+- `TEMPLATE_NO_UNKNOWN_HANDLING`
 - `HIGHLY_COUPLED_AUTOMATION`
+- `MONOLITHIC_CONFIG_FILE`
 
 ## Intent clustering
+
 Intent clustering is central to duplicate and conflict detection.
 
 ### Inputs
+
 For each automation, scene, and script derive:
 
 - alias or name tokens
@@ -407,6 +451,7 @@ For each automation, scene, and script derive:
 - mode keywords
 
 ### Planned fingerprint shape
+
 ```json
 {
   "object_id": "automation.bedtime_lights",
@@ -418,6 +463,7 @@ For each automation, scene, and script derive:
 ```
 
 ### Similarity signals
+
 - token similarity on alias and name
 - overlap in target entities
 - overlap in helpers
@@ -426,11 +472,13 @@ For each automation, scene, and script derive:
 - optional embedding similarity later
 
 ### Initial deterministic thresholds
+
 - `>= 0.75`: likely duplicate
 - `0.55 - 0.74`: related cluster
 - `< 0.55`: unrelated
 
 ## Conflict detection
+
 A conflict candidate exists when:
 
 1. Two objects write to the same entity or overlapping entity set.
@@ -438,6 +486,7 @@ A conflict candidate exists when:
 3. Their contexts are related or overlapping, such as similar time windows, same room, same intent cluster, or similar helper gates.
 
 ### Planned conflict score components
+
 - target overlap
 - action polarity difference
 - trigger overlap
@@ -449,9 +498,11 @@ Example summary:
 `automation.kitchen_motion_on` and `automation.night_shutdown` both control `light.kitchen_main` in overlapping evening contexts with opposing actions.
 
 ## Reachability and dead-object audit
+
 An object is a cleanup candidate when it has no inbound references from detectable sources.
 
 ### Planned inbound sources
+
 - automations
 - scripts
 - scenes
@@ -459,15 +510,19 @@ An object is a cleanup candidate when it has no inbound references from detectab
 - dashboards when available later
 
 ### Initial reachability rules
+
 - scene with no inbound references -> `UNUSED_SCENE`
 - helper with no inbound references -> `UNUSED_HELPER`
 - script with no inbound references -> `UNUSED_SCRIPT`
 
 ### Important caveat
+
 These should be labeled as `safe_review_candidate`, not `definitely_unused`, because some objects may still be activated manually.
 
 ## Naming and template audit
+
 ### Naming audit
+
 Start with a small ambiguity dictionary:
 
 - `mode`
@@ -488,6 +543,7 @@ Only flag names when context is too weak. `input_boolean.sleep_mode` is acceptab
 Convention detection should infer the dominant local style, such as snake_case ids, title case aliases, room-first naming, or intent-first naming, then flag outliers rather than forcing a hardcoded global style.
 
 ### Template audit
+
 Target checks include:
 
 - missing references inside templates
@@ -503,7 +559,10 @@ Initial deterministic patterns to detect:
 - numeric comparisons without `| float(...)`, `| int(...)`, or `| default(...)`
 - missing `is_state(...)` or fallback handling where appropriate
 
+Current shipped coverage includes missing template references plus detection of direct `states.domain.object.state` and `.attributes.*` access without visible `unknown` / `unavailable` handling.
+
 ## Summary output contract
+
 The final scan report should grow toward this top-level structure while remaining compatible with the current `ScanRun` lifecycle:
 
 ```json
@@ -542,6 +601,7 @@ The final scan report should grow toward this top-level structure while remainin
 ```
 
 ### Recommendation rules
+
 Recommendations should be:
 
 - concrete
@@ -552,9 +612,13 @@ Recommendations should be:
 Avoid vague advice and unsupported runtime assumptions. Prefer specific reviewable actions such as renaming an ambiguous helper, consolidating duplicate bedtime automations, or extracting repeated action blocks into scripts.
 
 ## Implementation order
+
 These phases describe the audit-engine expansion only. They do not replace the repo-level platform status documented in [PLAN.md](../PLAN.md).
 
 ### Phase A - Audit foundation
+
+Status: complete
+
 - normalize the expanded object model
 - build the reference graph
 - build the target writer graph
@@ -562,11 +626,17 @@ These phases describe the audit-engine expansion only. They do not replace the r
 - add the scoring framework
 
 ### Phase B - Highest-value deterministic checks
+
+Status: complete
+
 - ship the recommended first delivery set
 - keep checks evidence-backed and serializable
 - expose the results through the existing scan, export, and workbench flow
 
 ### Phase C - Smarter reasoning
+
+Status: deferred to later enhancement work
+
 - add intent fingerprinting
 - add duplicate service pattern detection
 - add semantic duplicate naming
@@ -574,17 +644,21 @@ These phases describe the audit-engine expansion only. They do not replace the r
 - add fragmented intent modeling
 
 ### Phase D - Audit-driven repair and enhancement
+
 - generate human-readable intent summaries per automation or scene
 - explain duplicate and conflict clusters
 - produce bounded refactor recommendations that later repair and enhancement flows can consume
 
 ## Validation and acceptance
+
 - Add fixture-based unit tests for normalization, reference resolution, graph indexing, and score calculation.
-- Add rule tests for missing references, unused helpers/scripts/scenes, ownership hotspots, ambiguous helper names, and highly coupled automations.
+- Add rule tests for missing references, disabled dependencies, template guards, unused helpers/scripts/scenes, ownership hotspots, ambiguous helper names, config-module smells, and highly coupled automations.
 - Add regression coverage to ensure current CLI, API, storage, and workbench flows can read richer scan outputs without route or command changes.
+- Keep graph-heavy synthetic coverage in place so conflict candidates, ownership hotspots, and intent clusters remain stable on larger inventories.
 - Keep every target-state schema or check in documentation clearly labeled as planned until the code ships.
 
 ## Useful internal helpers
+
 Useful helper modules for the audit expansion include:
 
 - `reference_resolver`

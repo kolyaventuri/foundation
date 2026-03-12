@@ -59,6 +59,20 @@ const scan: ScanDetail = {
       severity: 'low',
       title: 'Missing floor assignment for sensor.attic_temperature',
     },
+    {
+      evidence:
+        'Template automation:automation.office_watch:action.0.variables.temp uses direct state access without visible unknown handling.',
+      id: 'template_no_unknown_handling:automation:automation.office_watch:action.0.variables.temp',
+      kind: 'template_no_unknown_handling',
+      objectIds: [
+        'automation:automation.office_watch:action.0.variables.temp',
+        'automation.office_watch',
+        'sensor.office_temperature',
+      ],
+      severity: 'medium',
+      title:
+        'Template lacks unknown handling: automation:automation.office_watch:action.0.variables.temp',
+    },
   ],
   enrichment: {
     findingSummaries: [],
@@ -146,6 +160,13 @@ const workbench: ScanWorkbench = {
       status: 'advisory',
       treatment: 'advisory',
     },
+    {
+      findingId:
+        'template_no_unknown_handling:automation:automation.office_watch:action.0.variables.temp',
+      savedInputs: [],
+      status: 'advisory',
+      treatment: 'advisory',
+    },
   ],
   isPreviewStale: true,
   scanId: 'scan-1',
@@ -217,5 +238,18 @@ describe('workbench helpers', () => {
     expect(filtered[0]?.finding.id).toBe(
       'missing_floor_assignment:sensor.attic_temperature',
     );
+  });
+
+  it('filters newly added template guard findings by kind', () => {
+    const records = buildWorkbenchFindingRecords(scan, workbench);
+    const filtered = filterWorkbenchFindingRecords(records, {
+      kind: 'template_no_unknown_handling',
+      query: '',
+      severity: 'all',
+      status: 'advisory',
+    });
+
+    expect(filtered).toHaveLength(1);
+    expect(filtered[0]?.finding.kind).toBe('template_no_unknown_handling');
   });
 });
