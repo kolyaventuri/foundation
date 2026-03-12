@@ -150,6 +150,18 @@ const findingKindFilterOptions = [
     value: 'stale_entity',
   },
   {
+    label: getFindingDefinition('unused_helper').label,
+    value: 'unused_helper',
+  },
+  {
+    label: getFindingDefinition('unused_scene').label,
+    value: 'unused_scene',
+  },
+  {
+    label: getFindingDefinition('unused_script').label,
+    value: 'unused_script',
+  },
+  {
     label: getFindingDefinition('orphaned_entity_device').label,
     value: 'orphaned_entity_device',
   },

@@ -966,7 +966,7 @@ export function renderScanExportMarkdown(bundle: ScanExportBundle): string {
     lines.push(
       '',
       '## Audit Summary',
-      `- Object counts: areas=${bundle.scan.audit.objectCounts.areas}, automations=${bundle.scan.audit.objectCounts.automations}, devices=${bundle.scan.audit.objectCounts.devices}, entities=${bundle.scan.audit.objectCounts.entities}, floors=${bundle.scan.audit.objectCounts.floors}, helpers=${bundle.scan.audit.objectCounts.helpers}, labels=${bundle.scan.audit.objectCounts.labels}, scenes=${bundle.scan.audit.objectCounts.scenes}`,
+      `- Object counts: areas=${bundle.scan.audit.objectCounts.areas}, automations=${bundle.scan.audit.objectCounts.automations}, config_modules=${bundle.scan.audit.objectCounts.configModules}, devices=${bundle.scan.audit.objectCounts.devices}, entities=${bundle.scan.audit.objectCounts.entities}, floors=${bundle.scan.audit.objectCounts.floors}, helpers=${bundle.scan.audit.objectCounts.helpers}, labels=${bundle.scan.audit.objectCounts.labels}, scenes=${bundle.scan.audit.objectCounts.scenes}, scripts=${bundle.scan.audit.objectCounts.scripts}, templates=${bundle.scan.audit.objectCounts.templates}`,
       `- Scores: correctness=${bundle.scan.audit.scores.correctness}, maintainability=${bundle.scan.audit.scores.maintainability}, clarity=${bundle.scan.audit.scores.clarity}, redundancy=${bundle.scan.audit.scores.redundancy}, cleanup_opportunity=${bundle.scan.audit.scores.cleanupOpportunity}`,
       formatLineItemList(
         'Cleanup candidate finding IDs',

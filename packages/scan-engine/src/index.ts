@@ -87,7 +87,7 @@ type NameRequiredInput = Extract<FixRequiredInput, {field: 'name'}>;
 type WriterTarget = {
   areaIds: string[];
   id: string;
-  kind: 'automation' | 'scene';
+  kind: 'automation' | 'scene' | 'script';
   label: string;
   targetEntityIds: string[];
 };
@@ -96,8 +96,15 @@ type OwnershipHotspot = ScanOwnershipHotspot & {
   findingId: string;
 };
 
+type InboundReferenceIndex = {
+  helperIds: Map<string, string[]>;
+  sceneIds: Map<string, string[]>;
+  scriptIds: Map<string, string[]>;
+};
+
 const helperEntityDomains = new Set([
   'counter',
+  'group',
   'input_boolean',
   'input_button',
   'input_datetime',
@@ -232,10 +239,33 @@ function getSceneLabel(inventory: InventoryGraph, sceneId: string): string {
   );
 }
 
+function getScriptLabel(inventory: InventoryGraph, scriptId: string): string {
+  return (
+    inventory.scripts?.find((script) => script.scriptId === scriptId)?.name ??
+    scriptId
+  );
+}
+
+function getHelperLabel(inventory: InventoryGraph, helperId: string): string {
+  const helper = inventory.helpers?.find(
+    (candidate) => candidate.helperId === helperId,
+  );
+
+  if (helper) {
+    return `${helper.name} (${helper.helperId})`;
+  }
+
+  return getEntityLabel(inventory, helperId);
+}
+
 function getWriterKindForId(
   inventory: InventoryGraph,
   writerId: string,
 ): WriterTarget['kind'] {
+  if (inventory.scripts?.some((script) => script.scriptId === writerId)) {
+    return 'script';
+  }
+
   return inventory.scenes.some((scene) => scene.sceneId === writerId)
     ? 'scene'
     : 'automation';
@@ -254,6 +284,45 @@ function getResolvedAreaId(
     : undefined;
 
   return entity.areaId ?? device?.areaId ?? null;
+}
+
+function getAuditHelpers(inventory: InventoryGraph) {
+  const helpers = new Map<
+    string,
+    {
+      helperId: string;
+      helperType: string;
+      name: string;
+      sourcePath?: string;
+    }
+  >();
+
+  for (const helper of inventory.helpers ?? []) {
+    helpers.set(helper.helperId, {
+      helperId: helper.helperId,
+      helperType: helper.helperType,
+      name: helper.name,
+      ...(helper.sourcePath ? {sourcePath: helper.sourcePath} : {}),
+    });
+  }
+
+  for (const entity of inventory.entities) {
+    const helperType = getEntityDomain(entity.entityId);
+
+    if (!helperEntityDomains.has(helperType)) {
+      continue;
+    }
+
+    if (!helpers.has(entity.entityId)) {
+      helpers.set(entity.entityId, {
+        helperId: entity.entityId,
+        helperType,
+        name: entity.displayName,
+      });
+    }
+  }
+
+  return [...helpers.values()];
 }
 
 function createEntityFinding(
@@ -358,6 +427,19 @@ function buildWriterTargets(inventory: InventoryGraph): WriterTarget[] {
         targetEntityIds,
       };
     }),
+    ...(inventory.scripts ?? []).map((script) => {
+      const targetEntityIds = uniqueValues(
+        script.targetEntityIds.filter((entityId) => entityIds.has(entityId)),
+      );
+
+      return {
+        areaIds: getTargetAreaIds(targetEntityIds),
+        id: script.scriptId,
+        kind: 'script' as const,
+        label: script.name,
+        targetEntityIds,
+      };
+    }),
   ].filter((writer) => writer.targetEntityIds.length > 0);
 }
 
@@ -385,8 +467,95 @@ function buildOwnershipHotspots(inventory: InventoryGraph): OwnershipHotspot[] {
       writerIds: uniqueValues(writersForEntity.map((writer) => writer.id)),
       writerKinds: uniqueValues(
         writersForEntity.map((writer) => writer.kind),
-      ) as Array<'automation' | 'scene'>,
+      ) as Array<'automation' | 'scene' | 'script'>,
     }));
+}
+
+function addInboundReferences(
+  index: Map<string, string[]>,
+  targetIds: string[],
+  sourceId: string,
+): void {
+  for (const targetId of uniqueValues(targetIds)) {
+    const matches = index.get(targetId) ?? [];
+    matches.push(sourceId);
+    index.set(targetId, uniqueValues(matches));
+  }
+}
+
+function buildInboundReferenceIndex(
+  inventory: InventoryGraph,
+): InboundReferenceIndex {
+  const helperIds = new Map<string, string[]>();
+  const sceneIds = new Map<string, string[]>();
+  const scriptIds = new Map<string, string[]>();
+
+  for (const automation of inventory.automations) {
+    addInboundReferences(
+      helperIds,
+      automation.references?.helperIds ?? [],
+      automation.automationId,
+    );
+    addInboundReferences(
+      sceneIds,
+      automation.references?.sceneIds ?? [],
+      automation.automationId,
+    );
+    addInboundReferences(
+      scriptIds,
+      automation.references?.scriptIds ?? [],
+      automation.automationId,
+    );
+  }
+
+  for (const script of inventory.scripts ?? []) {
+    addInboundReferences(
+      helperIds,
+      script.references?.helperIds ?? [],
+      script.scriptId,
+    );
+    addInboundReferences(
+      sceneIds,
+      script.references?.sceneIds ?? [],
+      script.scriptId,
+    );
+    addInboundReferences(
+      scriptIds,
+      script.references?.scriptIds ?? [],
+      script.scriptId,
+    );
+  }
+
+  for (const scene of inventory.scenes) {
+    addInboundReferences(
+      helperIds,
+      scene.references?.helperIds ?? [],
+      scene.sceneId,
+    );
+    addInboundReferences(
+      sceneIds,
+      scene.references?.sceneIds ?? [],
+      scene.sceneId,
+    );
+    addInboundReferences(
+      scriptIds,
+      scene.references?.scriptIds ?? [],
+      scene.sceneId,
+    );
+  }
+
+  for (const template of inventory.templates ?? []) {
+    const sourceId = template.sourceObjectId ?? template.templateId;
+    addInboundReferences(helperIds, template.helperIds, sourceId);
+    addInboundReferences(sceneIds, template.sceneIds, sourceId);
+    addInboundReferences(scriptIds, template.scriptIds, sourceId);
+  }
+
+  return {
+    helperIds,
+    sceneIds,
+    scriptIds,
+  };
 }
 
 function attachRelatedFindings(findings: Finding[]): Finding[] {
@@ -1018,12 +1187,9 @@ function findAssistantContextBloat(inventory: InventoryGraph): Finding[] {
 }
 
 function findAmbiguousHelperNames(inventory: InventoryGraph): Finding[] {
-  return inventory.entities
-    .filter((entity) =>
-      helperEntityDomains.has(getEntityDomain(entity.entityId)),
-    )
-    .filter((entity) => {
-      const tokens = tokenizeLabel(entity.displayName);
+  return getAuditHelpers(inventory)
+    .filter((helper) => {
+      const tokens = tokenizeLabel(helper.name);
 
       return (
         tokens.length > 0 &&
@@ -1031,23 +1197,31 @@ function findAmbiguousHelperNames(inventory: InventoryGraph): Finding[] {
         tokens.every((token) => ambiguousHelperNameTokens.has(token))
       );
     })
-    .map((entity) => {
+    .map((helper) => {
+      const entity = getEntity(inventory, helper.helperId);
       const areaId = getResolvedAreaId(inventory, entity);
-      const tokens = tokenizeLabel(entity.displayName);
+      const tokens = tokenizeLabel(helper.name);
 
-      return createEntityFinding(inventory, {
+      return createFinding({
+        affectedObjects: [
+          createAffectedObject(
+            'helper',
+            helper.helperId,
+            getHelperLabel(inventory, helper.helperId),
+          ),
+        ],
         category: 'naming_intent_drift',
         checkId: 'AMBIGUOUS_HELPER_NAME',
-        confidence: 0.91,
-        entityId: entity.entityId,
-        evidence: `Helper ${entity.entityId} still uses ambiguous label "${entity.displayName}", which does not explain what the helper controls.`,
+        confidence: normalizeConfidence(0.91),
+        evidence: `Helper ${helper.helperId} still uses ambiguous label "${helper.name}", which does not explain what the helper controls.`,
         evidenceDetails: {
           areaId: areaId ?? 'unassigned',
-          helperDomain: getEntityDomain(entity.entityId),
+          helperDomain: helper.helperType,
           helperNameTokens: tokens,
         },
-        id: `ambiguous_helper_name:${entity.entityId}`,
+        id: `ambiguous_helper_name:${helper.helperId}`,
         kind: 'ambiguous_helper_name',
+        objectIds: [helper.helperId],
         recommendation: {
           action:
             'Rename the helper so its label describes the room, role, or automation intent.',
@@ -1061,15 +1235,170 @@ function findAmbiguousHelperNames(inventory: InventoryGraph): Finding[] {
           clarity: 86,
         },
         severity: tokens.length === 1 ? 'medium' : 'low',
-        summary: `${entity.entityId} still uses weak helper label "${entity.displayName}".`,
+        summary: `${helper.helperId} still uses weak helper label "${helper.name}".`,
         tags: [
           'ambiguous-helper',
-          getEntityDomain(entity.entityId),
+          helper.helperType,
           ...(areaId ? [areaId] : []),
         ],
-        title: `Ambiguous helper name on ${entity.entityId}`,
+        title: `Ambiguous helper name on ${helper.helperId}`,
       });
     });
+}
+
+function findUnusedHelpers(
+  inventory: InventoryGraph,
+  references: InboundReferenceIndex,
+): Finding[] {
+  return (inventory.helpers ?? [])
+    .filter(
+      (helper) =>
+        (references.helperIds.get(helper.helperId)?.length ?? 0) === 0,
+    )
+    .map((helper) =>
+      createFinding({
+        affectedObjects: [
+          createAffectedObject(
+            'helper',
+            helper.helperId,
+            getHelperLabel(inventory, helper.helperId),
+          ),
+        ],
+        category: 'dead_legacy_objects',
+        checkId: 'UNUSED_HELPER',
+        confidence: normalizeConfidence(0.76),
+        evidence: `Helper ${helper.helperId} was found in config analysis, but no scan-visible automations, scripts, or templates referenced it.`,
+        evidenceDetails: {
+          helperId: helper.helperId,
+          helperType: helper.helperType,
+          inboundReferenceCount: 0,
+          ...(helper.sourcePath ? {sourcePath: helper.sourcePath} : {}),
+        },
+        id: `unused_helper:${helper.helperId}`,
+        kind: 'unused_helper',
+        objectIds: [helper.helperId],
+        recommendation: {
+          action:
+            'Review whether the helper is still used manually or indirectly before removing it.',
+          steps: [
+            'Confirm whether dashboards, manual controls, or hidden integrations still use the helper.',
+            'Remove or archive the helper only if it is truly dead.',
+            'Rerun the scan to confirm the cleanup candidate clears.',
+          ],
+        },
+        scores: {
+          noise: 74,
+          redundancy: 52,
+        },
+        severity: 'low',
+        summary: `${helper.helperId} has no inbound references from scan-visible logic.`,
+        tags: ['cleanup-candidate', 'safe-review-candidate', 'unused-helper'],
+        title: `Unused helper candidate: ${helper.helperId}`,
+        whyItMatters:
+          'Unused helpers create clutter and make it harder to tell which control surfaces still matter.',
+      }),
+    );
+}
+
+function findUnusedScenes(
+  inventory: InventoryGraph,
+  references: InboundReferenceIndex,
+): Finding[] {
+  return inventory.scenes
+    .filter(
+      (scene) => (references.sceneIds.get(scene.sceneId)?.length ?? 0) === 0,
+    )
+    .map((scene) =>
+      createFinding({
+        affectedObjects: [
+          createAffectedObject(
+            'scene',
+            scene.sceneId,
+            `${scene.name} (${scene.sceneId})`,
+          ),
+        ],
+        category: 'dead_legacy_objects',
+        checkId: 'UNUSED_SCENE',
+        confidence: normalizeConfidence(0.74),
+        evidence: `Scene ${scene.name} was found in config analysis, but no scan-visible automations, scripts, or templates referenced it.`,
+        evidenceDetails: {
+          inboundReferenceCount: 0,
+          ...(scene.sourcePath ? {sourcePath: scene.sourcePath} : {}),
+          sceneId: scene.sceneId,
+        },
+        id: `unused_scene:${scene.sceneId}`,
+        kind: 'unused_scene',
+        objectIds: [scene.sceneId],
+        recommendation: {
+          action:
+            'Review whether the scene is still used manually or from dashboards before removing it.',
+          steps: [
+            'Confirm whether the scene is still activated outside scan-visible automations and scripts.',
+            'Remove or archive it only if it is no longer needed.',
+            'Rerun the scan to confirm the cleanup candidate clears.',
+          ],
+        },
+        scores: {
+          noise: 66,
+          redundancy: 48,
+        },
+        severity: 'low',
+        summary: `${scene.sceneId} has no inbound references from scan-visible logic.`,
+        tags: ['cleanup-candidate', 'safe-review-candidate', 'unused-scene'],
+        title: `Unused scene candidate: ${scene.name}`,
+      }),
+    );
+}
+
+function findUnusedScripts(
+  inventory: InventoryGraph,
+  references: InboundReferenceIndex,
+): Finding[] {
+  return (inventory.scripts ?? [])
+    .filter(
+      (script) =>
+        (references.scriptIds.get(script.scriptId)?.length ?? 0) === 0,
+    )
+    .map((script) =>
+      createFinding({
+        affectedObjects: [
+          createAffectedObject(
+            'script',
+            script.scriptId,
+            `${script.name} (${script.scriptId})`,
+          ),
+        ],
+        category: 'dead_legacy_objects',
+        checkId: 'UNUSED_SCRIPT',
+        confidence: normalizeConfidence(0.74),
+        evidence: `Script ${script.name} was found in config analysis, but no scan-visible automations, scripts, or templates referenced it.`,
+        evidenceDetails: {
+          inboundReferenceCount: 0,
+          ...(script.sourcePath ? {sourcePath: script.sourcePath} : {}),
+          scriptId: script.scriptId,
+        },
+        id: `unused_script:${script.scriptId}`,
+        kind: 'unused_script',
+        objectIds: [script.scriptId],
+        recommendation: {
+          action:
+            'Review whether the script is still used manually, from dashboards, or by hidden integrations before removing it.',
+          steps: [
+            'Confirm whether the script still has non-scan-visible callers.',
+            'Remove or archive it only if it is truly dead.',
+            'Rerun the scan to confirm the cleanup candidate clears.',
+          ],
+        },
+        scores: {
+          noise: 68,
+          redundancy: 56,
+        },
+        severity: 'low',
+        summary: `${script.scriptId} has no inbound references from scan-visible logic.`,
+        tags: ['cleanup-candidate', 'safe-review-candidate', 'unused-script'],
+        title: `Unused script candidate: ${script.name}`,
+      }),
+    );
 }
 
 function findEntityOwnershipHotspots(
@@ -1082,7 +1411,9 @@ function findEntityOwnershipHotspots(
 
       return writerKind === 'scene'
         ? getSceneLabel(inventory, writerId)
-        : getAutomationLabel(inventory, writerId);
+        : writerKind === 'script'
+          ? getScriptLabel(inventory, writerId)
+          : getAutomationLabel(inventory, writerId);
     });
     const affectedObjects = [
       createAffectedObject(
@@ -1099,11 +1430,17 @@ function findEntityOwnershipHotspots(
               writerId,
               `${getSceneLabel(inventory, writerId)} (${writerId})`,
             )
-          : createAffectedObject(
-              'automation',
-              writerId,
-              `${getAutomationLabel(inventory, writerId)} (${writerId})`,
-            );
+          : writerKind === 'script'
+            ? createAffectedObject(
+                'script',
+                writerId,
+                `${getScriptLabel(inventory, writerId)} (${writerId})`,
+              )
+            : createAffectedObject(
+                'automation',
+                writerId,
+                `${getAutomationLabel(inventory, writerId)} (${writerId})`,
+              );
       }),
     ];
 
@@ -1660,6 +1997,9 @@ export function createFixActions(
         return [];
       }
 
+      case 'unused_helper':
+      case 'unused_scene':
+      case 'unused_script':
       case 'shared_label_observation': {
         return [];
       }
@@ -1851,6 +2191,63 @@ export function createFindingAdvisories(
         ];
       }
 
+      case 'unused_helper': {
+        return [
+          createGenericAdvisory(
+            inventory,
+            finding,
+            'Unused-helper cleanup is advisory because some helpers are still used manually or through dashboards that the current scan cannot fully observe.',
+            'Review whether the helper is still needed before removing it.',
+            [
+              'Confirm whether the helper still has manual or dashboard-driven use.',
+              'Remove or archive it only if it is truly dead.',
+              'Rerun the scan to confirm the cleanup candidate clears.',
+            ],
+            [
+              'Removing the wrong helper can break hidden dashboard controls, manual routines, or indirect automation paths.',
+            ],
+          ),
+        ];
+      }
+
+      case 'unused_scene': {
+        return [
+          createGenericAdvisory(
+            inventory,
+            finding,
+            'Unused-scene cleanup is advisory because some scenes are still triggered manually or from dashboards that the current scan cannot observe.',
+            'Review whether the scene is still needed before removing it.',
+            [
+              'Confirm whether the scene still has manual or dashboard-driven use.',
+              'Remove or archive it only if it is truly dead.',
+              'Rerun the scan to confirm the cleanup candidate clears.',
+            ],
+            [
+              'Removing the wrong scene can break manual household workflows or dashboard shortcuts that are not represented in the current scan graph.',
+            ],
+          ),
+        ];
+      }
+
+      case 'unused_script': {
+        return [
+          createGenericAdvisory(
+            inventory,
+            finding,
+            'Unused-script cleanup is advisory because some scripts are still called manually or by integrations that the current scan cannot fully observe.',
+            'Review whether the script is still needed before removing it.',
+            [
+              'Confirm whether the script still has manual, dashboard, or hidden integration callers.',
+              'Remove or archive it only if it is truly dead.',
+              'Rerun the scan to confirm the cleanup candidate clears.',
+            ],
+            [
+              'Removing the wrong script can quietly break downstream routines that are not fully visible in the current deterministic scan.',
+            ],
+          ),
+        ];
+      }
+
       case 'automation_invalid_target': {
         return [
           createGenericAdvisory(
@@ -1983,6 +2380,8 @@ function buildAuditSummary(
   findings: Finding[],
   hotspots: OwnershipHotspot[],
 ): ScanAuditSummary {
+  const auditHelpers = getAuditHelpers(inventory);
+
   return {
     cleanupCandidateIds: uniqueValues(
       findings
@@ -1992,14 +2391,15 @@ function buildAuditSummary(
     objectCounts: {
       areas: inventory.areas.length,
       automations: inventory.automations.length,
+      configModules: inventory.configModules?.length ?? 0,
       devices: inventory.devices.length,
       entities: inventory.entities.length,
       floors: inventory.floors.length,
-      helpers: inventory.entities.filter((entity) =>
-        helperEntityDomains.has(getEntityDomain(entity.entityId)),
-      ).length,
+      helpers: auditHelpers.length,
       labels: inventory.labels.length,
       scenes: inventory.scenes.length,
+      scripts: inventory.scripts?.length ?? 0,
+      templates: inventory.templates?.length ?? 0,
     },
     ownershipHotspotFindingIds: uniqueValues(
       hotspots.map((hotspot) => hotspot.findingId),
@@ -2015,11 +2415,16 @@ function buildFindings(
   inventory: InventoryGraph,
   hotspots: OwnershipHotspot[],
 ): Finding[] {
+  const inboundReferences = buildInboundReferenceIndex(inventory);
+
   return attachRelatedFindings([
     ...findNameLabelFindings(inventory),
     ...findAmbiguousHelperNames(inventory),
     ...findOrphanedDeviceLinks(inventory),
     ...findStaleEntities(inventory),
+    ...findUnusedHelpers(inventory, inboundReferences),
+    ...findUnusedScenes(inventory, inboundReferences),
+    ...findUnusedScripts(inventory, inboundReferences),
     ...findMissingAreaAssignments(inventory),
     ...findMissingFloorAssignments(inventory),
     ...findDanglingLabelReferences(inventory),

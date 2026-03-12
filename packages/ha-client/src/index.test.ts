@@ -107,6 +107,12 @@ describe('ha-client', () => {
       [
         'automation: !include automations.yaml',
         'scene: !include scenes.yaml',
+        'script: !include scripts.yaml',
+        'input_boolean: !include input_boolean.yaml',
+        'template:',
+        '  - sensor:',
+        '      - name: Night Mode Template',
+        `        state: "{{ states('input_boolean.night_mode') }}"`,
       ].join('\n'),
     );
     writeFileSync(
@@ -115,19 +121,37 @@ describe('ha-client', () => {
         '- id: kitchen-lights',
         '  alias: Kitchen Lights',
         '  action:',
-        '    - target:',
-        '        entity_id: light.kitchen_light',
+        '    - service: script.turn_on',
+        '      target:',
+        '        entity_id: script.goodnight',
       ].join('\n'),
     );
     writeFileSync(
       join(configRoot, 'scenes.yaml'),
       [
-        '- id: evening-scene',
-        '  name: Evening',
+        '- id: evening_scene',
+        '  name: Evening Scene',
         '  entities:',
         '    light.kitchen_light:',
         '      state: "on"',
       ].join('\n'),
+    );
+    writeFileSync(
+      join(configRoot, 'scripts.yaml'),
+      [
+        'goodnight:',
+        '  alias: Goodnight',
+        '  sequence:',
+        '    - service: scene.turn_on',
+        '      target:',
+        '        entity_id: scene.evening_scene',
+        '    - variables:',
+        `        mode_state: "{{ states('input_boolean.night_mode') }}"`,
+      ].join('\n'),
+    );
+    writeFileSync(
+      join(configRoot, 'input_boolean.yaml'),
+      ['night_mode:', '  name: Night Mode'].join('\n'),
     );
 
     const mocks = createLiveHomeAssistantMocks({
@@ -159,23 +183,54 @@ describe('ha-client', () => {
         fetch: mocks.fetch,
       },
     );
+    const automation = result.inventory.automations[0];
+    const scene = result.inventory.scenes[0];
+    const script = result.inventory.scripts?.[0];
+    const helper = result.inventory.helpers?.[0];
+    const scriptModule = result.inventory.configModules?.find(
+      (module) => module.filePath === 'scripts.yaml',
+    );
 
     expect(result.connection.mode).toBe('live');
     expect(result.connection.warnings).toEqual([
       'Device registry listing failed; area inheritance will be incomplete.',
     ]);
-    expect(result.inventory.automations).toEqual([
-      expect.objectContaining({
-        automationId: 'kitchen-lights',
-        name: 'Kitchen Lights',
-      }),
-    ]);
-    expect(result.inventory.scenes).toEqual([
-      expect.objectContaining({
-        name: 'Evening',
-        sceneId: 'evening-scene',
-      }),
-    ]);
+    expect(automation).toBeDefined();
+    expect(scene).toBeDefined();
+    expect(script).toBeDefined();
+    expect(helper).toBeDefined();
+    expect(scriptModule).toBeDefined();
+
+    if (!automation || !scene || !script || !helper || !scriptModule) {
+      throw new Error('Expected live scan config analysis objects');
+    }
+
+    expect(automation.automationId).toBe('automation.kitchen_lights');
+    expect(automation.name).toBe('Kitchen Lights');
+    expect(automation.references?.scriptIds).toEqual(['script.goodnight']);
+
+    expect(scene.name).toBe('Evening Scene');
+    expect(scene.sceneId).toBe('scene.evening_scene');
+
+    expect(script.name).toBe('Goodnight');
+    expect(script.references?.helperIds).toEqual(['input_boolean.night_mode']);
+    expect(script.references?.sceneIds).toEqual(['scene.evening_scene']);
+    expect(script.scriptId).toBe('script.goodnight');
+
+    expect(helper.helperId).toBe('input_boolean.night_mode');
+    expect(helper.helperType).toBe('input_boolean');
+
+    expect(result.inventory.templates).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          helperIds: ['input_boolean.night_mode'],
+          sourcePath: 'configuration.yaml',
+        }),
+      ]),
+    );
+    expect(scriptModule.objectTypesPresent).toEqual(
+      expect.arrayContaining(['script', 'template']),
+    );
     expect(result.notes).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
@@ -193,7 +248,7 @@ describe('ha-client', () => {
         expect.objectContaining({
           name: 'config',
           status: 'completed',
-          summary: 'Loaded 3 config file(s).',
+          summary: 'Loaded 5 config file(s).',
         }),
       ]),
     );

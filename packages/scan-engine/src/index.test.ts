@@ -145,6 +145,13 @@ const phaseTwoAuditInventory: InventoryGraph = {
     {
       automationId: 'automation.evening_routine',
       name: 'Evening Routine',
+      references: {
+        entityIds: [],
+        helperIds: ['input_boolean.mode'],
+        sceneIds: [],
+        scriptIds: ['script.kitchen_boost'],
+        serviceIds: ['script.turn_on'],
+      },
       targetEntityIds: [
         'light.kitchen_main',
         'light.kitchen_accent',
@@ -156,12 +163,44 @@ const phaseTwoAuditInventory: InventoryGraph = {
     {
       automationId: 'automation.kitchen_presence',
       name: 'Kitchen Presence',
+      references: {
+        entityIds: ['binary_sensor.kitchen_motion'],
+        helperIds: ['input_boolean.mode'],
+        sceneIds: [],
+        scriptIds: [],
+        serviceIds: ['light.turn_on'],
+      },
       targetEntityIds: ['light.kitchen_main'],
     },
     {
       automationId: 'automation.kitchen_override',
       name: 'Kitchen Override',
+      references: {
+        entityIds: [],
+        helperIds: [],
+        sceneIds: [],
+        scriptIds: [],
+        serviceIds: ['light.turn_off'],
+      },
       targetEntityIds: ['light.kitchen_main'],
+    },
+  ],
+  configModules: [
+    {
+      automationCount: 3,
+      filePath: 'automations.yaml',
+      helperCount: 2,
+      lineCount: 42,
+      objectTypesPresent: [
+        'automation',
+        'helper',
+        'scene',
+        'script',
+        'template',
+      ],
+      sceneCount: 2,
+      scriptCount: 2,
+      templateCount: 1,
     },
   ],
   devices: [],
@@ -216,15 +255,91 @@ const phaseTwoAuditInventory: InventoryGraph = {
     },
   ],
   floors: [],
+  helpers: [
+    {
+      helperId: 'input_boolean.mode',
+      helperType: 'input_boolean',
+      name: 'Mode',
+      sourcePath: 'helpers.yaml',
+    },
+    {
+      helperId: 'input_boolean.night_toggle',
+      helperType: 'input_boolean',
+      name: 'Night Toggle',
+      sourcePath: 'helpers.yaml',
+    },
+  ],
   labels: [],
   scenes: [
     {
       name: 'Kitchen Evening',
+      references: {
+        entityIds: ['light.kitchen_main'],
+        helperIds: ['input_boolean.mode'],
+        sceneIds: [],
+        scriptIds: [],
+        serviceIds: [],
+      },
       sceneId: 'scene.kitchen_evening',
       targetEntityIds: ['light.kitchen_main'],
     },
+    {
+      name: 'Legacy Accent',
+      references: {
+        entityIds: ['light.kitchen_accent'],
+        helperIds: [],
+        sceneIds: [],
+        scriptIds: [],
+        serviceIds: [],
+      },
+      sceneId: 'scene.legacy_accent',
+      targetEntityIds: ['light.kitchen_accent'],
+    },
+  ],
+  scripts: [
+    {
+      name: 'Kitchen Boost',
+      references: {
+        entityIds: ['light.kitchen_main'],
+        helperIds: ['input_boolean.mode'],
+        sceneIds: ['scene.kitchen_evening'],
+        scriptIds: [],
+        serviceIds: ['scene.turn_on'],
+      },
+      scriptId: 'script.kitchen_boost',
+      sourcePath: 'scripts.yaml',
+      targetEntityIds: ['light.kitchen_main'],
+    },
+    {
+      name: 'Legacy Shutdown',
+      references: {
+        entityIds: ['light.living_lamp'],
+        helperIds: [],
+        sceneIds: [],
+        scriptIds: [],
+        serviceIds: ['light.turn_off'],
+      },
+      scriptId: 'script.legacy_shutdown',
+      sourcePath: 'scripts.yaml',
+      targetEntityIds: ['light.living_lamp'],
+    },
   ],
   source: 'mock',
+  templates: [
+    {
+      entityIds: [],
+      helperIds: ['input_boolean.mode'],
+      parseValid: true,
+      sceneIds: [],
+      scriptIds: [],
+      sourceObjectId: 'automation.evening_routine',
+      sourcePath: 'automations.yaml',
+      sourceType: 'automation',
+      templateId:
+        'automation:automation.evening_routine:action.0.variables.mode',
+      templateText: "{{ states('input_boolean.mode') }}",
+    },
+  ],
 };
 
 describe('scan-engine', () => {
@@ -366,6 +481,9 @@ describe('scan-engine', () => {
         'ambiguous_helper_name',
         'entity_ownership_hotspot',
         'highly_coupled_automation',
+        'unused_helper',
+        'unused_scene',
+        'unused_script',
       ]),
     );
 
@@ -375,12 +493,31 @@ describe('scan-engine', () => {
     const hotspotFinding = scan.findings.find(
       (finding) => finding.kind === 'entity_ownership_hotspot',
     );
+    const unusedHelperFinding = scan.findings.find(
+      (finding) => finding.id === 'unused_helper:input_boolean.night_toggle',
+    );
+    const unusedSceneFinding = scan.findings.find(
+      (finding) => finding.id === 'unused_scene:scene.legacy_accent',
+    );
+    const unusedScriptFinding = scan.findings.find(
+      (finding) => finding.id === 'unused_script:script.legacy_shutdown',
+    );
 
     expect(helperFinding).toBeDefined();
     expect(hotspotFinding).toBeDefined();
+    expect(unusedHelperFinding).toBeDefined();
+    expect(unusedSceneFinding).toBeDefined();
+    expect(unusedScriptFinding).toBeDefined();
     expect(scan.audit).toBeDefined();
 
-    if (!helperFinding || !hotspotFinding || !scan.audit) {
+    if (
+      !helperFinding ||
+      !hotspotFinding ||
+      !unusedHelperFinding ||
+      !unusedSceneFinding ||
+      !unusedScriptFinding ||
+      !scan.audit
+    ) {
       throw new Error('Expected phase 2 findings and audit summary');
     }
 
@@ -395,6 +532,17 @@ describe('scan-engine', () => {
       'highly_coupled_automation:automation.evening_routine',
     );
 
+    expect(unusedHelperFinding.category).toBe('dead_legacy_objects');
+    expect(unusedHelperFinding.evidenceDetails?.helperId).toBe(
+      'input_boolean.night_toggle',
+    );
+    expect(unusedSceneFinding.evidenceDetails?.sceneId).toBe(
+      'scene.legacy_accent',
+    );
+    expect(unusedScriptFinding.evidenceDetails?.scriptId).toBe(
+      'script.legacy_shutdown',
+    );
+
     expect(scan.audit.ownershipHotspotFindingIds).toEqual([
       'entity_ownership_hotspot:light.kitchen_main',
     ]);
@@ -407,8 +555,23 @@ describe('scan-engine', () => {
         'automation.kitchen_presence',
         'automation.kitchen_override',
         'scene.kitchen_evening',
+        'script.kitchen_boost',
       ]),
     );
+    expect(scan.audit.cleanupCandidateIds).toEqual(
+      expect.arrayContaining([
+        'unused_helper:input_boolean.night_toggle',
+        'unused_scene:scene.legacy_accent',
+        'unused_script:script.legacy_shutdown',
+      ]),
+    );
+    expect(scan.audit.objectCounts).toMatchObject({
+      configModules: 1,
+      helpers: 2,
+      scenes: 2,
+      scripts: 2,
+      templates: 1,
+    });
     expect(scan.audit.scores.clarity).toEqual(expect.any(Number));
     expect(scan.audit.scores.correctness).toEqual(expect.any(Number));
     expect(scan.audit.scores.maintainability).toEqual(expect.any(Number));

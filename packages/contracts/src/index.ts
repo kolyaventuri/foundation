@@ -27,7 +27,10 @@ export type FindingKind =
   | 'orphaned_entity_device'
   | 'scene_invalid_target'
   | 'shared_label_observation'
-  | 'stale_entity';
+  | 'stale_entity'
+  | 'unused_helper'
+  | 'unused_scene'
+  | 'unused_script';
 export type AssistantKind = 'assist' | 'alexa' | 'homekit';
 export type AssistantExposureOptionKey = AssistantKind | 'conversation';
 export type AssistantExposureFlagKey = 'enabled' | 'expose' | 'should_expose';
@@ -153,18 +156,84 @@ export type InventoryLabel = {
   name: string;
 };
 
+export type InventoryReferenceSet = {
+  entityIds: string[];
+  helperIds: string[];
+  sceneIds: string[];
+  scriptIds: string[];
+  serviceIds: string[];
+};
+
 export type InventoryAutomation = {
   automationId: string;
   name: string;
+  references?: InventoryReferenceSet;
   sourcePath?: string;
   targetEntityIds: string[];
 };
 
 export type InventoryScene = {
   name: string;
+  references?: InventoryReferenceSet;
   sceneId: string;
   sourcePath?: string;
   targetEntityIds: string[];
+};
+
+export type InventoryScript = {
+  name: string;
+  references?: InventoryReferenceSet;
+  scriptId: string;
+  sourcePath?: string;
+  targetEntityIds: string[];
+};
+
+export type InventoryHelperType =
+  | 'counter'
+  | 'group'
+  | 'input_boolean'
+  | 'input_button'
+  | 'input_datetime'
+  | 'input_number'
+  | 'input_select'
+  | 'input_text'
+  | 'timer';
+
+export type InventoryHelper = {
+  helperId: string;
+  helperType: InventoryHelperType;
+  name: string;
+  sourcePath?: string;
+};
+
+export type InventoryTemplateSourceType =
+  | 'automation'
+  | 'config'
+  | 'script'
+  | 'template';
+
+export type InventoryTemplate = {
+  entityIds: string[];
+  helperIds: string[];
+  parseValid: boolean;
+  sceneIds: string[];
+  scriptIds: string[];
+  sourceObjectId?: string;
+  sourcePath?: string;
+  sourceType: InventoryTemplateSourceType;
+  templateId: string;
+  templateText: string;
+};
+
+export type ConfigModule = {
+  automationCount: number;
+  filePath: string;
+  helperCount: number;
+  lineCount: number;
+  objectTypesPresent: string[];
+  sceneCount: number;
+  scriptCount: number;
+  templateCount: number;
 };
 
 export type ConfigIssueCode =
@@ -204,23 +273,31 @@ export type InventoryGraph = {
   areas: InventoryArea[];
   automations: InventoryAutomation[];
   configAnalysis?: ConfigAnalysis;
+  configModules?: ConfigModule[];
   devices: InventoryDevice[];
   entities: InventoryEntity[];
   floors: InventoryFloor[];
+  helpers?: InventoryHelper[];
   labels: InventoryLabel[];
   scenes: InventoryScene[];
+  scripts?: InventoryScript[];
   source: ScanMode;
+  templates?: InventoryTemplate[];
 };
 
 export type FindingAffectedObjectKind =
   | 'area'
   | 'assistant'
   | 'automation'
+  | 'config_module'
   | 'device'
   | 'entity'
   | 'floor'
+  | 'helper'
   | 'label'
-  | 'scene';
+  | 'scene'
+  | 'script'
+  | 'template';
 
 export type FindingAffectedObject = {
   id: string;
@@ -320,12 +397,15 @@ export type ScanAuditScores = {
 export type ScanObjectCounts = {
   areas: number;
   automations: number;
+  configModules: number;
   devices: number;
   entities: number;
   floors: number;
   helpers: number;
   labels: number;
   scenes: number;
+  scripts: number;
+  templates: number;
 };
 
 export type ScanOwnershipHotspot = {
@@ -333,7 +413,7 @@ export type ScanOwnershipHotspot = {
   entityId: string;
   entityLabel: string;
   writerIds: string[];
-  writerKinds: Array<'automation' | 'scene'>;
+  writerKinds: Array<'automation' | 'scene' | 'script'>;
 };
 
 export type ScanAuditSummary = {
@@ -551,6 +631,33 @@ const findingDefinitions = {
     whyItMatters:
       'Stale entities add noise to dashboards, pickers, repairs, and assistant context, and they can keep dead integrations or helpers looking active.',
   },
+  unused_helper: {
+    definition:
+      'An unused helper means the helper was found in config analysis, but no scan-visible automations, scripts, or templates referenced it.',
+    label: 'Unused helpers',
+    operatorGuidance:
+      'Review whether the helper is still used manually or indirectly, then remove or rename it only if it is truly dead.',
+    whyItMatters:
+      'Unused helpers increase cleanup cost and make it harder to identify which toggles, selectors, and timers still matter.',
+  },
+  unused_scene: {
+    definition:
+      'An unused scene means the scene was found in config analysis, but no scan-visible automations, scripts, or templates referenced it.',
+    label: 'Unused scenes',
+    operatorGuidance:
+      'Review whether the scene is still activated manually or from dashboards, then remove it only if it is no longer needed.',
+    whyItMatters:
+      'Unused scenes add maintenance noise and can make the remaining scene set harder to understand.',
+  },
+  unused_script: {
+    definition:
+      'An unused script means the script was found in config analysis, but no scan-visible automations, scripts, or templates referenced it.',
+    label: 'Unused scripts',
+    operatorGuidance:
+      'Review whether the script is still called manually, from dashboards, or by hidden integrations before removing it.',
+    whyItMatters:
+      'Dead scripts accumulate stale logic and make the real execution graph harder to reason about.',
+  },
 } satisfies Record<FindingKind, FindingDefinition>;
 
 const fixActionDefinitions = {
@@ -615,6 +722,12 @@ export function getFindingActionKind(
     case 'shared_label_observation': {
       return undefined;
     }
+
+    case 'unused_helper':
+    case 'unused_scene':
+    case 'unused_script': {
+      return undefined;
+    }
   }
 }
 
@@ -624,12 +737,16 @@ export type FixTargetKind =
   | 'area'
   | 'assistant'
   | 'automation'
+  | 'config_module'
   | 'device'
   | 'entity'
   | 'entity_registry'
   | 'floor'
+  | 'helper'
   | 'label'
-  | 'scene';
+  | 'scene'
+  | 'script'
+  | 'template';
 
 export type FixTarget = {
   id: string;

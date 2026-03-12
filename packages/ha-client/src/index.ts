@@ -339,9 +339,17 @@ export function collectMockInventory(): InventoryGraph {
       {
         automationId: 'automation.night_lamp',
         name: 'Night Lamp',
+        references: {
+          entityIds: ['light.living_room_lamp'],
+          helperIds: ['input_boolean.night_mode'],
+          sceneIds: [],
+          scriptIds: ['script.goodnight'],
+          serviceIds: ['light.turn_on', 'script.turn_on'],
+        },
         targetEntityIds: ['light.living_room_lamp', 'light.missing'],
       },
     ],
+    configModules: [],
     devices: [
       {
         areaId: 'area.living_room',
@@ -413,6 +421,13 @@ export function collectMockInventory(): InventoryGraph {
         name: 'Main Floor',
       },
     ],
+    helpers: [
+      {
+        helperId: 'input_boolean.night_mode',
+        helperType: 'input_boolean',
+        name: 'Night Mode',
+      },
+    ],
     labels: [
       {
         labelId: 'label.energy',
@@ -422,11 +437,33 @@ export function collectMockInventory(): InventoryGraph {
     scenes: [
       {
         name: 'Movie Time',
+        references: {
+          entityIds: ['light.living_room_lamp'],
+          helperIds: [],
+          sceneIds: [],
+          scriptIds: [],
+          serviceIds: [],
+        },
         sceneId: 'scene.movie_time',
         targetEntityIds: ['light.living_room_lamp', 'switch.missing'],
       },
     ],
+    scripts: [
+      {
+        name: 'Goodnight',
+        references: {
+          entityIds: ['light.living_room_lamp'],
+          helperIds: ['input_boolean.night_mode'],
+          sceneIds: ['scene.movie_time'],
+          scriptIds: [],
+          serviceIds: ['scene.turn_on'],
+        },
+        scriptId: 'script.goodnight',
+        targetEntityIds: ['light.living_room_lamp'],
+      },
+    ],
     source: 'mock',
+    templates: [],
   };
 }
 
@@ -682,6 +719,7 @@ function buildInventoryFromLiveData(input: {
       name: area.name,
     })),
     automations: input.configAnalysis?.automations ?? [],
+    configModules: input.configAnalysis?.configModules ?? [],
     ...(input.configAnalysis
       ? {configAnalysis: input.configAnalysis.analysis}
       : {}),
@@ -724,12 +762,15 @@ function buildInventoryFromLiveData(input: {
       floorId: floor.floor_id,
       name: floor.name,
     })),
+    helpers: input.configAnalysis?.helpers ?? [],
     labels: labelRegistryRows.map((label) => ({
       labelId: label.label_id,
       name: label.name,
     })),
     scenes: input.configAnalysis?.scenes ?? [],
+    scripts: input.configAnalysis?.scripts ?? [],
     source: 'live',
+    templates: input.configAnalysis?.templates ?? [],
   };
 }
 
@@ -834,7 +875,11 @@ async function collectMockScanData(
       ...inventory,
       automations: configAnalysis.automations,
       configAnalysis: configAnalysis.analysis,
+      configModules: configAnalysis.configModules,
+      helpers: configAnalysis.helpers,
       scenes: configAnalysis.scenes,
+      scripts: configAnalysis.scripts,
+      templates: configAnalysis.templates,
     };
     notes.push(...configAnalysis.notes);
     passes.push(
