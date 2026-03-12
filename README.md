@@ -61,6 +61,6 @@ The repo already supports a local-first audit, repair, and enhancement foundatio
 - deep scans can parse `configuration.yaml` plus supported include patterns from an optional read-only config root
 - the scan engine emits deterministic findings for duplicate names, stale entities, orphaned links, missing area assignments, missing floor assignments, dangling labels, invalid automation targets, invalid scene targets, and assistant exposure bloat
 - the API persists named profiles, rich scan runs, backup checkpoint state, history, diff summaries, and dry-run preview/apply responses in SQLite
-- the CLI manages saved profiles and `scan --mode/--deep/--llm-provider`, `checkpoint`, `findings`, `apply --dry-run`, and `export --format json` flows against the same SQLite database
+- the CLI manages saved profiles and `scan --mode/--deep/--llm-provider`, `checkpoint`, `findings --format table|json|md`, `apply --dry-run`, and `export --format json|md` flows against the same SQLite database
 
 The next planned expansion is the richer audit layer described in [docs/home-assistant-audit-utility.md](./docs/home-assistant-audit-utility.md).

@@ -171,6 +171,30 @@ describe('cli', () => {
     const findings = JSON.parse(findingsResult.stdout) as Array<{id: string}>;
     expect(findings.length).toBeGreaterThan(0);
 
+    const findingsTableResult = await runCliCommand(
+      ['findings', scanSummary.scanId, '--format', 'table'],
+      dbPath,
+    );
+    expect(findingsTableResult.exitCode).toBe(0);
+    expect(findingsTableResult.stdout).toContain(
+      `Scan ID: ${scanSummary.scanId}`,
+    );
+    expect(findingsTableResult.stdout).toContain('Severity');
+    expect(findingsTableResult.stdout).toContain(findings[0]!.id);
+
+    const findingsMarkdownResult = await runCliCommand(
+      ['findings', scanSummary.scanId, '--format', 'md'],
+      dbPath,
+    );
+    expect(findingsMarkdownResult.exitCode).toBe(0);
+    expect(findingsMarkdownResult.stdout).toContain(
+      '# Home Assistant Findings Report',
+    );
+    expect(findingsMarkdownResult.stdout).toContain(
+      `Scan ID: ${scanSummary.scanId}`,
+    );
+    expect(findingsMarkdownResult.stdout).toContain(`- ID: ${findings[0]!.id}`);
+
     const previewResult = await runCliCommand(
       [
         'preview',

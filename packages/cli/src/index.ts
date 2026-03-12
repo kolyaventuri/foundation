@@ -6,6 +6,7 @@ import {
   type ConnectionProfile,
   type Finding,
   type FixPreviewInput,
+  getFindingDefinition,
 } from '@ha-repair/contracts';
 import {listProviderDescriptors} from '@ha-repair/llm';
 import {
@@ -17,6 +18,11 @@ import {
 
 type GlobalOptions = {
   dbPath?: string;
+};
+
+type FindingsOutput = {
+  findings: Finding[];
+  scanId: string;
 };
 
 function printJson(value: unknown) {
@@ -200,6 +206,80 @@ function buildPreviewInputs(
       };
     }),
   ];
+}
+
+function formatList(values: string[]): string {
+  return values.length > 0 ? values.join(', ') : 'None';
+}
+
+function formatTableRow(columns: string[], widths: number[]): string {
+  return columns
+    .map((column, index) => column.padEnd(widths[index]!))
+    .join(' | ');
+}
+
+function renderFindingsTable(output: FindingsOutput): string {
+  if (output.findings.length === 0) {
+    return `Scan ID: ${output.scanId}\nNo findings recorded.`;
+  }
+
+  const rows = output.findings.map((finding) => [
+    finding.id,
+    finding.severity,
+    getFindingDefinition(finding.kind).label,
+    finding.title,
+    formatList(finding.objectIds),
+  ]);
+  const headers = ['ID', 'Severity', 'Label', 'Title', 'Objects'];
+  const widths = headers.map((header, index) =>
+    Math.max(header.length, ...rows.map((row) => row[index]!.length)),
+  );
+  const separator = widths.map((width) => '-'.repeat(width)).join('-|-');
+  const lines = [
+    `Scan ID: ${output.scanId}`,
+    `Findings: ${output.findings.length}`,
+    '',
+    formatTableRow(headers, widths),
+    separator,
+    ...rows.map((row) => formatTableRow(row, widths)),
+  ];
+
+  return lines.join('\n');
+}
+
+function renderFindingsMarkdown(output: FindingsOutput): string {
+  const lines = [
+    '# Home Assistant Findings Report',
+    '',
+    `Scan ID: ${output.scanId}`,
+    `Findings: ${output.findings.length}`,
+    '',
+  ];
+
+  if (output.findings.length === 0) {
+    lines.push('No findings recorded for this scan.');
+    return lines.join('\n');
+  }
+
+  for (const finding of output.findings) {
+    const definition = getFindingDefinition(finding.kind);
+
+    lines.push(
+      `## ${finding.title}`,
+      `- ID: ${finding.id}`,
+      `- Label: ${definition.label}`,
+      `- Kind: ${finding.kind}`,
+      `- Severity: ${finding.severity}`,
+      `- Definition: ${definition.definition}`,
+      `- Why it matters: ${definition.whyItMatters}`,
+      `- Recommended next step: ${definition.operatorGuidance}`,
+      `- Evidence: ${finding.evidence}`,
+      `- Objects: ${formatList(finding.objectIds)}`,
+      '',
+    );
+  }
+
+  return lines.join('\n');
 }
 
 export function buildProgram() {
@@ -498,14 +578,21 @@ export function buildProgram() {
   program
     .command('findings [scanId]')
     .description('Print findings from a scan in the local SQLite service')
+    .addOption(
+      new Option('--format <format>', 'Findings output format')
+        .choices(['json', 'md', 'table'])
+        .default('json'),
+    )
     .action(
       async (
         scanId: string | undefined,
-        _options: Record<string, never>,
+        options: {
+          format: 'json' | 'md' | 'table';
+        },
         command: Command,
       ) => {
         try {
-          const findings = await withService(command, async (service) => {
+          const output = await withService(command, async (service) => {
             const resolvedScanId = scanId ?? (await service.getLatestScanId());
 
             if (!resolvedScanId) {
@@ -516,10 +603,23 @@ export function buildProgram() {
               );
             }
 
-            return service.getScanFindings(resolvedScanId);
+            return {
+              findings: await service.getScanFindings(resolvedScanId),
+              scanId: resolvedScanId,
+            } satisfies FindingsOutput;
           });
 
-          printJson(findings);
+          if (options.format === 'table') {
+            console.log(renderFindingsTable(output));
+            return;
+          }
+
+          if (options.format === 'md') {
+            console.log(renderFindingsMarkdown(output));
+            return;
+          }
+
+          printJson(output.findings);
         } catch (error) {
           reportError(error);
         }

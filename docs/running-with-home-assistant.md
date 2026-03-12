@@ -215,6 +215,18 @@ pnpm --filter @ha-repair/cli dev checkpoint --download
 
 By default the downloaded backup lands under `./data/backups` relative to the process working directory.
 
+Review the latest scan findings as a terminal table:
+
+```sh
+pnpm --filter @ha-repair/cli dev findings --format table
+```
+
+Render the same findings as Markdown:
+
+```sh
+pnpm --filter @ha-repair/cli dev findings --format md
+```
+
 Export the latest scan as Markdown:
 
 ```sh
