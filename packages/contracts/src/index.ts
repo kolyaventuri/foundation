@@ -7,11 +7,21 @@ export type CapabilityStatus =
   | 'partial'
   | 'unknown';
 export type FindingSeverity = 'low' | 'medium' | 'high';
+export type FindingCategory =
+  | 'broken_references'
+  | 'conflict_overlap'
+  | 'dead_legacy_objects'
+  | 'fragile_automation_patterns'
+  | 'inventory_hygiene'
+  | 'naming_intent_drift';
 export type FindingKind =
+  | 'ambiguous_helper_name'
   | 'assistant_context_bloat'
   | 'automation_invalid_target'
   | 'dangling_label_reference'
   | 'duplicate_name'
+  | 'entity_ownership_hotspot'
+  | 'highly_coupled_automation'
   | 'missing_area_assignment'
   | 'missing_floor_assignment'
   | 'orphaned_entity_device'
@@ -202,13 +212,58 @@ export type InventoryGraph = {
   source: ScanMode;
 };
 
+export type FindingAffectedObjectKind =
+  | 'area'
+  | 'assistant'
+  | 'automation'
+  | 'device'
+  | 'entity'
+  | 'floor'
+  | 'label'
+  | 'scene';
+
+export type FindingAffectedObject = {
+  id: string;
+  kind: FindingAffectedObjectKind;
+  label?: string;
+};
+
+export type FindingEvidenceValue = boolean | number | string | string[];
+
+export type FindingEvidenceDetails = Record<string, FindingEvidenceValue>;
+
+export type FindingRecommendation = {
+  action: string;
+  steps: string[];
+};
+
+export type FindingScoreKey =
+  | 'clarity'
+  | 'coupling'
+  | 'fragility'
+  | 'noise'
+  | 'redundancy';
+
+export type FindingScores = Partial<Record<FindingScoreKey, number>>;
+
 export type Finding = {
+  affectedObjects?: FindingAffectedObject[];
+  category?: FindingCategory;
+  checkId?: string;
+  confidence?: number;
   evidence: string;
+  evidenceDetails?: FindingEvidenceDetails;
   id: string;
   kind: FindingKind;
   objectIds: string[];
+  recommendation?: FindingRecommendation;
+  relatedFindingIds?: string[];
+  scores?: FindingScores;
   severity: FindingSeverity;
+  summary?: string;
+  tags?: string[];
   title: string;
+  whyItMatters?: string;
 };
 
 export type ScanPassResult = {
@@ -254,7 +309,43 @@ export type BackupCheckpoint = {
   summary: string;
 };
 
+export type ScanAuditScores = {
+  clarity: number;
+  cleanupOpportunity: number;
+  correctness: number;
+  maintainability: number;
+  redundancy: number;
+};
+
+export type ScanObjectCounts = {
+  areas: number;
+  automations: number;
+  devices: number;
+  entities: number;
+  floors: number;
+  helpers: number;
+  labels: number;
+  scenes: number;
+};
+
+export type ScanOwnershipHotspot = {
+  areaIds: string[];
+  entityId: string;
+  entityLabel: string;
+  writerIds: string[];
+  writerKinds: Array<'automation' | 'scene'>;
+};
+
+export type ScanAuditSummary = {
+  cleanupCandidateIds: string[];
+  objectCounts: ScanObjectCounts;
+  ownershipHotspotFindingIds: string[];
+  ownershipHotspots: ScanOwnershipHotspot[];
+  scores: ScanAuditScores;
+};
+
 export type ScanRun = {
+  audit?: ScanAuditSummary;
   backupCheckpoint?: BackupCheckpoint;
   createdAt: string;
   enrichment: ScanEnrichment;
@@ -343,6 +434,15 @@ export type FixActionDefinition = {
 };
 
 const findingDefinitions = {
+  ambiguous_helper_name: {
+    definition:
+      'An ambiguous helper name means a helper entity still uses a weak or generic label such as "Mode" or "Status" without enough context to explain its purpose.',
+    label: 'Ambiguous helpers',
+    operatorGuidance:
+      'Rename the helper so the label explains its room, role, or automation intent, then rerun the scan.',
+    whyItMatters:
+      'Generic helper names are hard to distinguish in dashboards, traces, automations, and future maintenance work.',
+  },
   assistant_context_bloat: {
     definition:
       'Assistant exposure bloat means one entity is exposed to multiple assistant surfaces, such as Assist, Alexa, and HomeKit.',
@@ -378,6 +478,24 @@ const findingDefinitions = {
       'Rename the entities so each user-facing surface has a distinct name that still makes sense in the room where it appears.',
     whyItMatters:
       'Same-area name collisions are hard to distinguish in dashboards, target pickers, and voice flows, so operators and assistants can target the wrong thing.',
+  },
+  entity_ownership_hotspot: {
+    definition:
+      'An entity ownership hotspot means several scan-visible automations or scenes all write to the same entity, increasing overlap and coordination risk.',
+    label: 'Ownership hotspots',
+    operatorGuidance:
+      'Review whether the writers should be consolidated, sequenced more explicitly, or narrowed so fewer objects compete for the same entity.',
+    whyItMatters:
+      'The more writers that target one entity, the harder it becomes to predict state changes, troubleshoot regressions, and reason about intent.',
+  },
+  highly_coupled_automation: {
+    definition:
+      'A highly coupled automation reaches across many targets, domains, or areas, making one object responsible for too much live behavior.',
+    label: 'Coupled automations',
+    operatorGuidance:
+      'Review whether the automation should be split into smaller intent-specific pieces or reuse scripts so each unit has a narrower scope.',
+    whyItMatters:
+      'Broad automations are harder to validate and repair because one change can affect several rooms, devices, or behavior paths at once.',
   },
   missing_area_assignment: {
     definition:
@@ -485,8 +603,11 @@ export function getFindingActionKind(
       return 'review_stale_entity';
     }
 
+    case 'ambiguous_helper_name':
     case 'automation_invalid_target':
     case 'dangling_label_reference':
+    case 'entity_ownership_hotspot':
+    case 'highly_coupled_automation':
     case 'missing_area_assignment':
     case 'missing_floor_assignment':
     case 'orphaned_entity_device':
@@ -499,7 +620,16 @@ export function getFindingActionKind(
 
 export type FixRisk = 'low' | 'medium' | 'high';
 
-export type FixTargetKind = 'entity' | 'device' | 'entity_registry';
+export type FixTargetKind =
+  | 'area'
+  | 'assistant'
+  | 'automation'
+  | 'device'
+  | 'entity'
+  | 'entity_registry'
+  | 'floor'
+  | 'label'
+  | 'scene';
 
 export type FixTarget = {
   id: string;

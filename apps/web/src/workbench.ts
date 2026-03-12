@@ -174,7 +174,15 @@ export function buildWorkbenchFindingRecords(
       finding,
       group: getRailGroup(entry.status),
       savedInputsCount: entry.savedInputs.length,
-      searchText: [finding.title, finding.evidence, ...finding.objectIds]
+      searchText: [
+        finding.title,
+        finding.summary,
+        finding.evidence,
+        finding.category,
+        ...(finding.tags ?? []),
+        ...finding.objectIds,
+      ]
+        .filter((value): value is string => typeof value === 'string')
         .join(' ')
         .toLowerCase(),
       status: entry.status,

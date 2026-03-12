@@ -402,7 +402,7 @@ describe('storage service', () => {
     try {
       expect(
         Number(database.prepare('PRAGMA user_version').get()?.user_version),
-      ).toBe(4);
+      ).toBe(5);
       expect(
         database
           .prepare(
@@ -493,6 +493,17 @@ describe('storage service', () => {
 
       const persistedFirstScan = await secondService.getScan(firstScanId);
       expect(persistedFirstScan.id).toBe(firstScanId);
+      expect(persistedFirstScan.audit?.scores.correctness).toEqual(
+        expect.any(Number),
+      );
+      expect(
+        persistedFirstScan.findings.find(
+          (finding) => finding.id === 'stale_entity:sensor.kitchen_light_power',
+        ),
+      ).toMatchObject({
+        category: 'dead_legacy_objects',
+        checkId: 'STALE_ENTITY',
+      });
 
       const history = await secondService.listHistory();
       expect(history).toHaveLength(2);
@@ -878,6 +889,9 @@ describe('storage service', () => {
       expect(exportBundle.generatedAt).toEqual(expect.any(String));
       expect(exportBundle.scan.id).toBe(scan.id);
       expect(exportBundle.actions).toHaveLength(2);
+      expect(exportBundle.scan.audit?.scores.maintainability).toEqual(
+        expect.any(Number),
+      );
 
       const markdown = renderScanExportMarkdown(exportBundle);
       const normalizedMarkdown = markdown
@@ -885,6 +899,8 @@ describe('storage service', () => {
         .replace(/Scan ID: .+/u, 'Scan ID: <scanId>')
         .replace(/Scanned at: .+/u, 'Scanned at: <scannedAt>');
 
+      expect(normalizedMarkdown).toContain('## Audit Summary');
+      expect(normalizedMarkdown).toContain('Check ID: STALE_ENTITY');
       expect(normalizedMarkdown).toContain('## Fix Actions');
       expect(normalizedMarkdown).toContain(
         'Commands: No literal Home Assistant payloads generated yet.',

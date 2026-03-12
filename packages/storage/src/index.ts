@@ -76,7 +76,7 @@ import {
 } from '@ha-repair/scan-engine';
 
 const defaultDatabasePath = './data/ha-repair.sqlite';
-const currentSchemaVersion = 4;
+const currentSchemaVersion = 5;
 const defaultProfileSettingKey = 'defaultProfileName';
 
 type StoredWorkbenchItemStatus = 'staged' | 'dry_run_applied';
@@ -121,6 +121,7 @@ const scanFindingsTable = sqliteTable(
     title: text('title').notNull(),
     evidence: text('evidence').notNull(),
     objectIdsJson: text('object_ids_json').notNull(),
+    findingJson: text('finding_json'),
   },
   (table) => ({
     scanFindingIndex: uniqueIndex('scan_findings_scan_id_finding_id_idx').on(
@@ -485,6 +486,13 @@ function applyMigrations(database: DatabaseSync) {
     `);
   }
 
+  if (version < 5) {
+    database.exec(`
+      ALTER TABLE scan_findings
+      ADD COLUMN finding_json TEXT;
+    `);
+  }
+
   database.exec(`PRAGMA user_version = ${currentSchemaVersion};`);
 }
 
@@ -600,6 +608,23 @@ function toConnectionProfile(row: ProfilesRow): ConnectionProfile {
 }
 
 function toFinding(row: ScanFindingRow): Finding {
+  const findingJson = resolveOptionalString(row.findingJson);
+  const storedFinding =
+    findingJson === undefined ? undefined : parseJson<Finding>(findingJson);
+
+  if (storedFinding) {
+    return {
+      ...storedFinding,
+      evidence: storedFinding.evidence ?? row.evidence,
+      id: storedFinding.id ?? row.findingId,
+      kind: storedFinding.kind ?? row.kind,
+      objectIds:
+        storedFinding.objectIds ?? parseJson<string[]>(row.objectIdsJson),
+      severity: storedFinding.severity ?? row.severity,
+      title: storedFinding.title ?? row.title,
+    };
+  }
+
   return {
     evidence: row.evidence,
     id: row.findingId,
@@ -830,10 +855,11 @@ function hasProvidedFixInputValue(input: FixAction['requiredInputs'][number]) {
 
 function formatFindingDefinitionLines(finding: Finding): string[] {
   const definition = getFindingDefinition(finding.kind);
+  const whyItMatters = finding.whyItMatters ?? definition.whyItMatters;
 
   return [
     `- Definition: ${definition.definition}`,
-    `- Why it matters: ${definition.whyItMatters}`,
+    `- Why it matters: ${whyItMatters}`,
     `- Recommended next step: ${definition.operatorGuidance}`,
   ];
 }
@@ -936,20 +962,70 @@ export function renderScanExportMarkdown(bundle: ScanExportBundle): string {
     }
   }
 
+  if (bundle.scan.audit) {
+    lines.push(
+      '',
+      '## Audit Summary',
+      `- Object counts: areas=${bundle.scan.audit.objectCounts.areas}, automations=${bundle.scan.audit.objectCounts.automations}, devices=${bundle.scan.audit.objectCounts.devices}, entities=${bundle.scan.audit.objectCounts.entities}, floors=${bundle.scan.audit.objectCounts.floors}, helpers=${bundle.scan.audit.objectCounts.helpers}, labels=${bundle.scan.audit.objectCounts.labels}, scenes=${bundle.scan.audit.objectCounts.scenes}`,
+      `- Scores: correctness=${bundle.scan.audit.scores.correctness}, maintainability=${bundle.scan.audit.scores.maintainability}, clarity=${bundle.scan.audit.scores.clarity}, redundancy=${bundle.scan.audit.scores.redundancy}, cleanup_opportunity=${bundle.scan.audit.scores.cleanupOpportunity}`,
+      formatLineItemList(
+        'Cleanup candidate finding IDs',
+        bundle.scan.audit.cleanupCandidateIds,
+      ),
+      formatLineItemList(
+        'Ownership hotspot finding IDs',
+        bundle.scan.audit.ownershipHotspotFindingIds,
+      ),
+    );
+
+    if (bundle.scan.audit.ownershipHotspots.length === 0) {
+      lines.push('- Ownership hotspots: None');
+    } else {
+      for (const hotspot of bundle.scan.audit.ownershipHotspots) {
+        lines.push(
+          `- Ownership hotspot: ${hotspot.entityLabel} (${hotspot.entityId}) via ${hotspot.writerIds.join(', ')}`,
+        );
+      }
+    }
+  }
+
   lines.push('', '## Findings');
 
   if (bundle.findings.length === 0) {
     lines.push('No findings recorded for this scan.', '');
   } else {
     for (const finding of bundle.findings) {
+      const confidenceLine =
+        finding.confidence === undefined
+          ? []
+          : [`- Confidence: ${Math.round(finding.confidence * 100)}%`];
+
       lines.push(
         `### ${finding.title}`,
         `- ID: ${finding.id}`,
         `- Kind: ${finding.kind}`,
+        ...(finding.category ? [`- Category: ${finding.category}`] : []),
+        ...(finding.checkId ? [`- Check ID: ${finding.checkId}`] : []),
         `- Severity: ${finding.severity}`,
+        ...confidenceLine,
         ...formatFindingDefinitionLines(finding),
+        ...(finding.summary ? [`- Summary: ${finding.summary}`] : []),
+        ...(finding.recommendation
+          ? [`- Recommended action: ${finding.recommendation.action}`]
+          : []),
         `- Evidence: ${finding.evidence}`,
         formatLineItemList('Objects', finding.objectIds),
+        ...(finding.tags && finding.tags.length > 0
+          ? [formatLineItemList('Tags', finding.tags)]
+          : []),
+        ...(finding.relatedFindingIds && finding.relatedFindingIds.length > 0
+          ? [
+              formatLineItemList(
+                'Related finding IDs',
+                finding.relatedFindingIds,
+              ),
+            ]
+          : []),
         '',
       );
     }
@@ -1601,6 +1677,7 @@ export async function createRepairService(
       await maybeInsertRows(
         scan.findings.map((finding) => ({
           evidence: finding.evidence,
+          findingJson: JSON.stringify(finding),
           findingId: finding.id,
           kind: finding.kind,
           objectIdsJson: JSON.stringify(finding.objectIds),

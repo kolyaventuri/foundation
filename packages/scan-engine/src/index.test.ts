@@ -130,6 +130,103 @@ const sharedLabelObservationInventory: InventoryGraph = {
   source: 'mock',
 };
 
+const phaseTwoAuditInventory: InventoryGraph = {
+  areas: [
+    {
+      areaId: 'area.kitchen',
+      name: 'Kitchen',
+    },
+    {
+      areaId: 'area.living',
+      name: 'Living Room',
+    },
+  ],
+  automations: [
+    {
+      automationId: 'automation.evening_routine',
+      name: 'Evening Routine',
+      targetEntityIds: [
+        'light.kitchen_main',
+        'light.kitchen_accent',
+        'light.living_lamp',
+        'switch.living_fan',
+        'switch.porch',
+      ],
+    },
+    {
+      automationId: 'automation.kitchen_presence',
+      name: 'Kitchen Presence',
+      targetEntityIds: ['light.kitchen_main'],
+    },
+    {
+      automationId: 'automation.kitchen_override',
+      name: 'Kitchen Override',
+      targetEntityIds: ['light.kitchen_main'],
+    },
+  ],
+  devices: [],
+  entities: [
+    {
+      areaId: 'area.kitchen',
+      disabledBy: null,
+      displayName: 'Mode',
+      entityId: 'input_boolean.mode',
+      isStale: false,
+      name: null,
+    },
+    {
+      areaId: 'area.kitchen',
+      disabledBy: null,
+      displayName: 'Kitchen Main',
+      entityId: 'light.kitchen_main',
+      isStale: false,
+      name: null,
+    },
+    {
+      areaId: 'area.kitchen',
+      disabledBy: null,
+      displayName: 'Kitchen Accent',
+      entityId: 'light.kitchen_accent',
+      isStale: false,
+      name: null,
+    },
+    {
+      areaId: 'area.living',
+      disabledBy: null,
+      displayName: 'Living Lamp',
+      entityId: 'light.living_lamp',
+      isStale: false,
+      name: null,
+    },
+    {
+      areaId: 'area.living',
+      disabledBy: null,
+      displayName: 'Living Fan',
+      entityId: 'switch.living_fan',
+      isStale: false,
+      name: null,
+    },
+    {
+      areaId: 'area.living',
+      disabledBy: null,
+      displayName: 'Porch Light',
+      entityId: 'switch.porch',
+      isStale: false,
+      name: null,
+    },
+  ],
+  floors: [],
+  labels: [],
+  scenes: [
+    {
+      name: 'Kitchen Evening',
+      sceneId: 'scene.kitchen_evening',
+      targetEntityIds: ['light.kitchen_main'],
+    },
+  ],
+  source: 'mock',
+};
+
 describe('scan-engine', () => {
   it('describes the initial scaffold surfaces', () => {
     const summary = createFrameworkSummary();
@@ -259,5 +356,61 @@ describe('scan-engine', () => {
         }),
       ]),
     );
+  });
+
+  it('adds richer phase 2 metadata, ownership hotspots, and coupling checks', () => {
+    const scan = runScan(phaseTwoAuditInventory);
+
+    expect(scan.findings.map((finding) => finding.kind)).toEqual(
+      expect.arrayContaining([
+        'ambiguous_helper_name',
+        'entity_ownership_hotspot',
+        'highly_coupled_automation',
+      ]),
+    );
+
+    const helperFinding = scan.findings.find(
+      (finding) => finding.kind === 'ambiguous_helper_name',
+    );
+    const hotspotFinding = scan.findings.find(
+      (finding) => finding.kind === 'entity_ownership_hotspot',
+    );
+
+    expect(helperFinding).toBeDefined();
+    expect(hotspotFinding).toBeDefined();
+    expect(scan.audit).toBeDefined();
+
+    if (!helperFinding || !hotspotFinding || !scan.audit) {
+      throw new Error('Expected phase 2 findings and audit summary');
+    }
+
+    expect(helperFinding.category).toBe('naming_intent_drift');
+    expect(helperFinding.checkId).toBe('AMBIGUOUS_HELPER_NAME');
+    expect(helperFinding.evidenceDetails?.helperDomain).toBe('input_boolean');
+    expect(helperFinding.recommendation?.action).toContain('Rename the helper');
+
+    expect(hotspotFinding.category).toBe('conflict_overlap');
+    expect(hotspotFinding.checkId).toBe('ENTITY_OWNERSHIP_HOTSPOT');
+    expect(hotspotFinding.relatedFindingIds).toContain(
+      'highly_coupled_automation:automation.evening_routine',
+    );
+
+    expect(scan.audit.ownershipHotspotFindingIds).toEqual([
+      'entity_ownership_hotspot:light.kitchen_main',
+    ]);
+    expect(scan.audit.ownershipHotspots[0]?.entityId).toBe(
+      'light.kitchen_main',
+    );
+    expect(scan.audit.ownershipHotspots[0]?.writerIds).toEqual(
+      expect.arrayContaining([
+        'automation.evening_routine',
+        'automation.kitchen_presence',
+        'automation.kitchen_override',
+        'scene.kitchen_evening',
+      ]),
+    );
+    expect(scan.audit.scores.clarity).toEqual(expect.any(Number));
+    expect(scan.audit.scores.correctness).toEqual(expect.any(Number));
+    expect(scan.audit.scores.maintainability).toEqual(expect.any(Number));
   });
 });

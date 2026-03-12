@@ -263,18 +263,36 @@ function renderFindingsMarkdown(output: FindingsOutput): string {
 
   for (const finding of output.findings) {
     const definition = getFindingDefinition(finding.kind);
+    const whyItMatters = finding.whyItMatters ?? definition.whyItMatters;
+    const confidenceLine =
+      finding.confidence === undefined
+        ? []
+        : [`- Confidence: ${Math.round(finding.confidence * 100)}%`];
 
     lines.push(
       `## ${finding.title}`,
       `- ID: ${finding.id}`,
       `- Label: ${definition.label}`,
       `- Kind: ${finding.kind}`,
+      ...(finding.category ? [`- Category: ${finding.category}`] : []),
+      ...(finding.checkId ? [`- Check ID: ${finding.checkId}`] : []),
       `- Severity: ${finding.severity}`,
+      ...confidenceLine,
       `- Definition: ${definition.definition}`,
-      `- Why it matters: ${definition.whyItMatters}`,
+      `- Why it matters: ${whyItMatters}`,
+      ...(finding.summary ? [`- Summary: ${finding.summary}`] : []),
       `- Recommended next step: ${definition.operatorGuidance}`,
+      ...(finding.recommendation
+        ? [`- Recommended action: ${finding.recommendation.action}`]
+        : []),
       `- Evidence: ${finding.evidence}`,
       `- Objects: ${formatList(finding.objectIds)}`,
+      ...(finding.tags && finding.tags.length > 0
+        ? [`- Tags: ${formatList(finding.tags)}`]
+        : []),
+      ...(finding.relatedFindingIds && finding.relatedFindingIds.length > 0
+        ? [`- Related findings: ${formatList(finding.relatedFindingIds)}`]
+        : []),
       '',
     );
   }

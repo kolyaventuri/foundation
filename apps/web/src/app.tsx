@@ -102,6 +102,10 @@ const statusToneClasses = {
 
 const findingKindFilterOptions = [
   {
+    label: getFindingDefinition('ambiguous_helper_name').label,
+    value: 'ambiguous_helper_name',
+  },
+  {
     label: getFindingDefinition('assistant_context_bloat').label,
     value: 'assistant_context_bloat',
   },
@@ -116,6 +120,14 @@ const findingKindFilterOptions = [
   {
     label: getFindingDefinition('duplicate_name').label,
     value: 'duplicate_name',
+  },
+  {
+    label: getFindingDefinition('entity_ownership_hotspot').label,
+    value: 'entity_ownership_hotspot',
+  },
+  {
+    label: getFindingDefinition('highly_coupled_automation').label,
+    value: 'highly_coupled_automation',
   },
   {
     label: getFindingDefinition('missing_area_assignment').label,
