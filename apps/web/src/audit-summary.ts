@@ -1,4 +1,5 @@
 import type {
+  ScanAuditDigest,
   ScanAuditScores,
   ScanAuditSummary,
   ScanConflictHotspot,
@@ -23,6 +24,12 @@ export type AuditHighlight = {
   id: string;
   title: string;
 };
+
+type AuditScoreSource = {
+  scores: ScanAuditScores;
+};
+
+type AuditSignalSource = ScanAuditDigest | ScanAuditSummary;
 
 const auditScoreOrder = [
   'correctness',
@@ -72,7 +79,7 @@ const objectCountLabels: Record<
 };
 
 export function buildAuditScoreCards(
-  audit: ScanAuditSummary,
+  audit: AuditScoreSource,
 ): AuditScoreCard[] {
   return auditScoreOrder.map((key) => ({
     key,
@@ -81,29 +88,60 @@ export function buildAuditScoreCards(
   }));
 }
 
+function getAuditSignalCount(
+  audit: AuditSignalSource,
+  key:
+    | 'cleanupCandidateCount'
+    | 'conflictCandidateCount'
+    | 'intentClusterCount'
+    | 'ownershipHotspotCount',
+): number {
+  if ('cleanupCandidateCount' in audit) {
+    return audit[key];
+  }
+
+  switch (key) {
+    case 'cleanupCandidateCount': {
+      return audit.cleanupCandidateIds.length;
+    }
+
+    case 'conflictCandidateCount': {
+      return audit.conflictCandidateIds.length;
+    }
+
+    case 'intentClusterCount': {
+      return audit.intentClusters.length;
+    }
+
+    case 'ownershipHotspotCount': {
+      return audit.ownershipHotspots.length;
+    }
+  }
+}
+
 export function buildAuditSignalChips(
-  audit: ScanAuditSummary,
+  audit: AuditSignalSource,
 ): AuditSignalChip[] {
   return [
     {
       key: 'cleanup',
       label: 'Cleanup candidates',
-      value: audit.cleanupCandidateIds.length,
+      value: getAuditSignalCount(audit, 'cleanupCandidateCount'),
     },
     {
       key: 'conflicts',
       label: 'Conflict candidates',
-      value: audit.conflictCandidateIds.length,
+      value: getAuditSignalCount(audit, 'conflictCandidateCount'),
     },
     {
       key: 'ownership',
       label: 'Ownership hotspots',
-      value: audit.ownershipHotspots.length,
+      value: getAuditSignalCount(audit, 'ownershipHotspotCount'),
     },
     {
       key: 'clusters',
       label: 'Intent clusters',
-      value: audit.intentClusters.length,
+      value: getAuditSignalCount(audit, 'intentClusterCount'),
     },
   ];
 }

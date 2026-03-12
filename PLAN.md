@@ -120,6 +120,8 @@ Checkpoint reached:
 - deterministic checks now cover ambiguous helper names, unused helpers/scenes/scripts, ownership hotspots, highly coupled automations, likely conflicting controls, and template missing references
 - audit summaries now persist install-level scores, cleanup candidate IDs, conflict candidate IDs, conflict hotspots, and intent clusters
 - markdown exports include the richer audit summary, and the web workbench now surfaces an audit overview with scores, conflict hotspots, and intent clusters
+- lightweight audit digests now flow through CLI scan output, API history responses, and saved-scan cards so operators can compare scan posture without opening each workbench
+- the web workbench audit overview now includes direct shortcuts into cleanup, conflict, ownership, and cluster-related finding slices instead of remaining a passive summary surface
 
 Deliverables:
 - expand the normalized scan model beyond entities, automations, and scenes to include scripts, helpers, templates, config modules, and graph-derived relationships
@@ -129,9 +131,9 @@ Deliverables:
 - improve fixture coverage and performance for larger Home Assistant inventories
 
 Immediate next slice:
-- thread the richer audit summary through more operator surfaces, especially CLI/API scan summaries and deeper web workbench affordances
 - keep adding deterministic checks from the audit spec while tightening fixture coverage around larger inventories and graph-heavy scans
 - reduce scan-engine complexity in the new clustering/conflict code as follow-up cleanup rather than blocking current behavior
+- keep tightening operator affordances around the richer audit model, especially where summary-level signals should link directly into review and repair decisions
 
 Exit criteria:
 - the system can explain not only what is present, but where logic is brittle, duplicated, conflicting, stale, or structurally risky

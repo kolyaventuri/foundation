@@ -2,6 +2,7 @@ import process from 'node:process';
 import {Command, Option} from 'commander';
 import {
   type AssistantKind,
+  createScanAuditDigest,
   createFrameworkSummary,
   type ConnectionProfile,
   type Finding,
@@ -537,6 +538,7 @@ export function buildProgram() {
           );
 
           printJson({
+            audit: scan.audit ? createScanAuditDigest(scan.audit) : null,
             backupCheckpointStatus: scan.backupCheckpoint?.status ?? null,
             findings: scan.findings.length,
             mode: scan.mode,

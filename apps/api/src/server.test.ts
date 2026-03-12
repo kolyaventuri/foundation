@@ -435,6 +435,11 @@ describe('api server', () => {
       const historyBody = parseJson<ScanHistoryResponse>(historyResponse.body);
       expect(historyBody.scans).toHaveLength(2);
       expect(historyBody.scans[0]?.id).toBe(secondScan.scan.id);
+      const latestAudit = historyBody.scans[0]?.audit;
+      expect(latestAudit?.cleanupCandidateCount).toEqual(expect.any(Number));
+      expect(latestAudit?.conflictCandidateCount).toEqual(expect.any(Number));
+      expect(latestAudit?.intentClusterCount).toEqual(expect.any(Number));
+      expect(latestAudit?.ownershipHotspotCount).toEqual(expect.any(Number));
 
       const previewResponse = await secondServer.inject({
         method: 'POST',

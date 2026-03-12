@@ -161,9 +161,27 @@ describe('cli', () => {
     );
     expect(scanResult.exitCode).toBe(0);
     const scanSummary = JSON.parse(scanResult.stdout) as {
+      audit: {
+        cleanupCandidateCount: number;
+        conflictCandidateCount: number;
+        scores: {
+          correctness: number;
+          maintainability: number;
+        };
+      } | null;
       profileName: string | null;
       scanId: string;
     };
+    expect(scanSummary.audit?.cleanupCandidateCount).toEqual(
+      expect.any(Number),
+    );
+    expect(scanSummary.audit?.conflictCandidateCount).toEqual(
+      expect.any(Number),
+    );
+    expect(scanSummary.audit?.scores.correctness).toEqual(expect.any(Number));
+    expect(scanSummary.audit?.scores.maintainability).toEqual(
+      expect.any(Number),
+    );
     expect(scanSummary.profileName).toBe('primary');
 
     const findingsResult = await runCliCommand(['findings'], dbPath);

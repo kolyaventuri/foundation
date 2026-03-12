@@ -13,6 +13,7 @@ import {
   uniqueIndex,
 } from 'drizzle-orm/sqlite-core';
 import {
+  createScanAuditDigest,
   getFindingDefinition,
   getFixActionDefinition,
   type ApiErrorResponse,
@@ -2292,6 +2293,7 @@ export async function createRepairService(
       const scan = row.scanJson ? parseJson<ScanRun>(row.scanJson) : undefined;
 
       return {
+        ...(scan?.audit ? {audit: createScanAuditDigest(scan.audit)} : {}),
         ...(scan?.backupCheckpoint
           ? {backupCheckpointStatus: scan.backupCheckpoint.status}
           : {}),

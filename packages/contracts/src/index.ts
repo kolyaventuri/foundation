@@ -448,6 +448,15 @@ export type ScanAuditSummary = {
   scores: ScanAuditScores;
 };
 
+export type ScanAuditDigest = {
+  cleanupCandidateCount: number;
+  conflictCandidateCount: number;
+  intentClusterCount: number;
+  objectCounts: ScanObjectCounts;
+  ownershipHotspotCount: number;
+  scores: ScanAuditScores;
+};
+
 export type ScanRun = {
   audit?: ScanAuditSummary;
   backupCheckpoint?: BackupCheckpoint;
@@ -498,6 +507,7 @@ export type ScanFindingsResponse = {
 };
 
 export type ScanHistoryEntry = {
+  audit?: ScanAuditDigest;
   backupCheckpointStatus?: BackupCheckpointStatus;
   createdAt: string;
   findingsCount: number;
@@ -509,6 +519,19 @@ export type ScanHistoryEntry = {
 export type ScanHistoryResponse = {
   scans: ScanHistoryEntry[];
 };
+
+export function createScanAuditDigest(
+  audit: ScanAuditSummary,
+): ScanAuditDigest {
+  return {
+    cleanupCandidateCount: audit.cleanupCandidateIds.length,
+    conflictCandidateCount: audit.conflictCandidateIds.length,
+    intentClusterCount: audit.intentClusters.length,
+    objectCounts: audit.objectCounts,
+    ownershipHotspotCount: audit.ownershipHotspots.length,
+    scores: audit.scores,
+  };
+}
 
 export type BackupCheckpointCreateRequest = {
   download?: boolean;

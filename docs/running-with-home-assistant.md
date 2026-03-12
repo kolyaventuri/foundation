@@ -120,6 +120,7 @@ The scan command prints a JSON summary with:
 - `profileName`
 - pass statuses
 - findings count
+- audit scores plus cleanup/conflict/ownership/intent counts, when available
 - backup checkpoint status, if one already exists
 
 ## 6. Start the API and web app

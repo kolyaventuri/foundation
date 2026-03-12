@@ -873,6 +873,48 @@ export function App() {
     void loadWorkbench(scanId, nextRoute);
   }
 
+  function focusWorkbenchAuditSlice(input: {
+    findingIds?: string[];
+    kind?: RailFilters['kind'];
+    query?: string;
+  }) {
+    if (!route.scanId || records.length === 0) {
+      return;
+    }
+
+    const nextFilters: RailFilters = {
+      kind: input.kind ?? 'all',
+      query: input.query ?? '',
+      severity: 'all',
+      status: 'all',
+    };
+
+    startTransition(() => {
+      setFilters(nextFilters);
+      setRailScrollTop(0);
+    });
+
+    const nextRecords = filterWorkbenchFindingRecords(records, nextFilters);
+    const nextFindingId =
+      input.findingIds?.find((findingId) =>
+        nextRecords.some((record) => record.finding.id === findingId),
+      ) ?? nextRecords[0]?.finding.id;
+
+    if (!nextFindingId) {
+      return;
+    }
+
+    syncRoute(
+      {
+        ...route,
+        findingId: nextFindingId,
+        panel: 'finding',
+        scanId: route.scanId,
+      },
+      'replace',
+    );
+  }
+
   function updateScanLaunchMode(mode: ScanMode) {
     if (mode === 'live') {
       void loadProfiles();
@@ -1295,9 +1337,45 @@ export function App() {
                     </p>
                   </article>
                 </div>
-                {selectedScan.audit && (
-                  <ScanAuditOverview audit={selectedScan.audit} />
-                )}
+                {selectedScan.audit &&
+                  (() => {
+                    const audit = selectedScan.audit;
+
+                    return (
+                      <ScanAuditOverview
+                        audit={audit}
+                        onFocusCleanup={() => {
+                          focusWorkbenchAuditSlice({
+                            findingIds: audit.cleanupCandidateIds,
+                          });
+                        }}
+                        onFocusConflictCandidates={() => {
+                          focusWorkbenchAuditSlice({
+                            findingIds: audit.conflictCandidateIds,
+                            kind: 'likely_conflicting_controls',
+                          });
+                        }}
+                        onFocusConflictHotspot={(findingIds, query) => {
+                          focusWorkbenchAuditSlice({
+                            findingIds,
+                            kind: 'likely_conflicting_controls',
+                            query,
+                          });
+                        }}
+                        onFocusIntentCluster={(query) => {
+                          focusWorkbenchAuditSlice({
+                            query,
+                          });
+                        }}
+                        onFocusOwnership={() => {
+                          focusWorkbenchAuditSlice({
+                            findingIds: audit.ownershipHotspotFindingIds,
+                            kind: 'entity_ownership_hotspot',
+                          });
+                        }}
+                      />
+                    );
+                  })()}
               </>
             )}
             {errorMessage && (
@@ -1738,6 +1816,7 @@ function LandingView({
                   {' • '}
                   {formatTimestamp(entry.createdAt)}
                 </p>
+                <SavedScanAuditSummary entry={entry} />
               </button>
             ))
           )}
@@ -1747,11 +1826,70 @@ function LandingView({
   );
 }
 
-function ScanAuditOverview({audit}: {audit: NonNullable<ScanDetail['audit']>}) {
+function SavedScanAuditSummary({entry}: {entry: ScanHistoryEntry}) {
+  if (!entry.audit) {
+    return null;
+  }
+
+  const scoreCards = buildAuditScoreCards(entry.audit).slice(0, 2);
+  const signalChips = buildAuditSignalChips(entry.audit).slice(0, 2);
+
+  return (
+    <div className="mt-3 rounded-[0.9rem] border border-black/8 bg-ink-strong/4 px-3 py-3">
+      <p className="text-xs leading-5 text-ink-soft">
+        {summarizeAuditObjectCounts(entry.audit.objectCounts, 4)}
+      </p>
+      <div className="mt-3 flex flex-wrap gap-2">
+        {scoreCards.map((card) => (
+          <span
+            className={`rounded-full border px-2.5 py-1 text-[0.68rem] font-semibold tracking-[0.12em] uppercase ${getAuditScoreToneClass(card.key, card.value)}`}
+            key={card.key}
+          >
+            {card.label} {formatAuditScore(card.value)}
+          </span>
+        ))}
+        {signalChips.map((chip) => (
+          <span
+            className="rounded-full border border-black/10 bg-white/75 px-2.5 py-1 text-[0.68rem] font-semibold tracking-[0.12em] uppercase text-ink-soft"
+            key={chip.key}
+          >
+            {chip.label} {chip.value}
+          </span>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function ScanAuditOverview({
+  audit,
+  onFocusCleanup,
+  onFocusConflictCandidates,
+  onFocusConflictHotspot,
+  onFocusIntentCluster,
+  onFocusOwnership,
+}: {
+  audit: NonNullable<ScanDetail['audit']>;
+  onFocusCleanup: () => void;
+  onFocusConflictCandidates: () => void;
+  onFocusConflictHotspot: (findingIds: string[], query: string) => void;
+  onFocusIntentCluster: (query: string) => void;
+  onFocusOwnership: () => void;
+}) {
   const scoreCards = buildAuditScoreCards(audit);
   const signalChips = buildAuditSignalChips(audit);
   const conflictHighlights = buildConflictHotspotHighlights(audit);
   const intentHighlights = buildIntentClusterHighlights(audit);
+  const conflictHotspotsById = new Map(
+    audit.conflictHotspots.map(
+      (hotspot) => [hotspot.entityId, hotspot] as const,
+    ),
+  );
+  const intentClustersById = new Map(
+    audit.intentClusters.map(
+      (cluster) => [cluster.clusterId, cluster] as const,
+    ),
+  );
 
   return (
     <section className="mt-5 grid gap-3 xl:grid-cols-[minmax(0,1.45fr)_minmax(0,1fr)_minmax(0,1fr)]">
@@ -1796,6 +1934,33 @@ function ScanAuditOverview({audit}: {audit: NonNullable<ScanDetail['audit']>}) {
             </span>
           ))}
         </div>
+
+        <div className="mt-4 flex flex-wrap gap-2">
+          <button
+            className={subtleButtonClass}
+            disabled={audit.cleanupCandidateIds.length === 0}
+            onClick={onFocusCleanup}
+            type="button"
+          >
+            Review cleanup findings
+          </button>
+          <button
+            className={subtleButtonClass}
+            disabled={audit.conflictCandidateIds.length === 0}
+            onClick={onFocusConflictCandidates}
+            type="button"
+          >
+            Review conflict findings
+          </button>
+          <button
+            className={subtleButtonClass}
+            disabled={audit.ownershipHotspotFindingIds.length === 0}
+            onClick={onFocusOwnership}
+            type="button"
+          >
+            Review ownership findings
+          </button>
+        </div>
       </article>
 
       <article className="rounded-[1rem] border border-black/8 bg-ink-strong/4 px-4 py-3">
@@ -1819,20 +1984,38 @@ function ScanAuditOverview({audit}: {audit: NonNullable<ScanDetail['audit']>}) {
               No conflict hotspots detected in this scan.
             </p>
           ) : (
-            conflictHighlights.map((highlight) => (
-              <div
-                className="rounded-[0.9rem] border border-black/10 bg-white/75 px-3 py-3"
-                key={highlight.id}
-              >
-                <p className="text-sm font-semibold text-ink-strong">
-                  {highlight.title}
-                </p>
-                <p className="mt-1 text-xs text-ink-soft">{highlight.id}</p>
-                <p className="mt-2 text-sm leading-6 text-ink-soft">
-                  {highlight.detail}
-                </p>
-              </div>
-            ))
+            conflictHighlights.map((highlight) => {
+              const hotspot = conflictHotspotsById.get(highlight.id);
+
+              return (
+                <div
+                  className="rounded-[0.9rem] border border-black/10 bg-white/75 px-3 py-3"
+                  key={highlight.id}
+                >
+                  <p className="text-sm font-semibold text-ink-strong">
+                    {highlight.title}
+                  </p>
+                  <p className="mt-1 text-xs text-ink-soft">{highlight.id}</p>
+                  <p className="mt-2 text-sm leading-6 text-ink-soft">
+                    {highlight.detail}
+                  </p>
+                  {hotspot && hotspot.findingIds.length > 0 && (
+                    <button
+                      className="mt-3 text-sm font-semibold text-ink-strong transition hover:text-accent"
+                      onClick={() => {
+                        onFocusConflictHotspot(
+                          hotspot.findingIds,
+                          hotspot.entityId,
+                        );
+                      }}
+                      type="button"
+                    >
+                      Open matching findings
+                    </button>
+                  )}
+                </div>
+              );
+            })
           )}
         </div>
       </article>
@@ -1858,19 +2041,36 @@ function ScanAuditOverview({audit}: {audit: NonNullable<ScanDetail['audit']>}) {
               No multi-object intent clusters were inferred from this scan.
             </p>
           ) : (
-            intentHighlights.map((highlight) => (
-              <div
-                className="rounded-[0.9rem] border border-black/10 bg-white/75 px-3 py-3"
-                key={highlight.id}
-              >
-                <p className="text-sm font-semibold text-ink-strong">
-                  {highlight.title}
-                </p>
-                <p className="mt-2 text-sm leading-6 text-ink-soft">
-                  {highlight.detail}
-                </p>
-              </div>
-            ))
+            intentHighlights.map((highlight) => {
+              const cluster = intentClustersById.get(highlight.id);
+              const focusQuery =
+                cluster?.objectIds[0] ?? cluster?.conceptTerms[0];
+
+              return (
+                <div
+                  className="rounded-[0.9rem] border border-black/10 bg-white/75 px-3 py-3"
+                  key={highlight.id}
+                >
+                  <p className="text-sm font-semibold text-ink-strong">
+                    {highlight.title}
+                  </p>
+                  <p className="mt-2 text-sm leading-6 text-ink-soft">
+                    {highlight.detail}
+                  </p>
+                  {focusQuery && (
+                    <button
+                      className="mt-3 text-sm font-semibold text-ink-strong transition hover:text-accent"
+                      onClick={() => {
+                        onFocusIntentCluster(focusQuery);
+                      }}
+                      type="button"
+                    >
+                      Filter matching findings
+                    </button>
+                  )}
+                </div>
+              );
+            })
           )}
         </div>
       </article>

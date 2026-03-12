@@ -1,5 +1,5 @@
 import {describe, expect, it} from 'vitest';
-import type {ScanAuditSummary} from '@ha-repair/contracts';
+import type {ScanAuditDigest, ScanAuditSummary} from '@ha-repair/contracts';
 import {
   buildAuditScoreCards,
   buildAuditSignalChips,
@@ -81,6 +81,15 @@ const audit: ScanAuditSummary = {
   },
 };
 
+const auditDigest: ScanAuditDigest = {
+  cleanupCandidateCount: 2,
+  conflictCandidateCount: 1,
+  intentClusterCount: 1,
+  objectCounts: audit.objectCounts,
+  ownershipHotspotCount: 1,
+  scores: audit.scores,
+};
+
 describe('audit summary helpers', () => {
   it('builds score cards in the intended operator order', () => {
     expect(buildAuditScoreCards(audit)).toEqual([
@@ -103,6 +112,20 @@ describe('audit summary helpers', () => {
     expect(summarizeAuditObjectCounts(audit.objectCounts)).toBe(
       '12 entities, 2 automations, 3 helpers, 2 scripts, 1 scene, 2 templates',
     );
+  });
+
+  it('reuses score and signal helpers for lightweight audit digests', () => {
+    expect(buildAuditScoreCards(auditDigest).slice(0, 2)).toEqual([
+      {key: 'correctness', label: 'Correctness', value: 83},
+      {key: 'maintainability', label: 'Maintainability', value: 72},
+    ]);
+
+    expect(buildAuditSignalChips(auditDigest)).toEqual([
+      {key: 'cleanup', label: 'Cleanup candidates', value: 2},
+      {key: 'conflicts', label: 'Conflict candidates', value: 1},
+      {key: 'ownership', label: 'Ownership hotspots', value: 1},
+      {key: 'clusters', label: 'Intent clusters', value: 1},
+    ]);
   });
 
   it('formats conflict and intent highlights for the workbench header', () => {

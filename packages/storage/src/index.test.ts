@@ -508,7 +508,17 @@ describe('storage service', () => {
       const history = await secondService.listHistory();
       expect(history).toHaveLength(2);
       expect(history[0]?.id).toBe(secondScan.id);
+      const latestAudit = history[0]?.audit;
+      expect(latestAudit?.cleanupCandidateCount).toEqual(expect.any(Number));
+      expect(latestAudit?.conflictCandidateCount).toEqual(expect.any(Number));
+      expect(latestAudit?.intentClusterCount).toEqual(expect.any(Number));
+      expect(latestAudit?.ownershipHotspotCount).toEqual(expect.any(Number));
+      expect(latestAudit?.scores.correctness).toEqual(expect.any(Number));
+      expect(latestAudit?.scores.maintainability).toEqual(expect.any(Number));
       expect(history[1]?.id).toBe(firstScanId);
+      expect(history[1]?.audit?.objectCounts.entities).toBe(
+        baselineInventory.entities.length,
+      );
     } finally {
       await secondService.close();
     }
