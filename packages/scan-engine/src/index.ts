@@ -15,7 +15,9 @@ import type {
   InventoryEntity,
   InventoryGraph,
   ScanAuditSummary,
+  ScanConflictHotspot,
   ScanEnrichment,
+  ScanIntentCluster,
   ScanMode,
   ScanNote,
   ScanPassResult,
@@ -92,8 +94,30 @@ type WriterTarget = {
   targetEntityIds: string[];
 };
 
+type WriterProfile = WriterTarget & {
+  actionTags: string[];
+  helperIds: string[];
+  nameTokens: string[];
+  serviceIds: string[];
+};
+
 type OwnershipHotspot = ScanOwnershipHotspot & {
   findingId: string;
+};
+
+type WriterRelation = {
+  score: number;
+  sharedAreaIds: string[];
+  sharedHelperIds: string[];
+  sharedNameTokens: string[];
+  sharedTargetEntityIds: string[];
+};
+
+type ConflictCandidate = {
+  finding: Finding;
+  sharedEntityIds: string[];
+  writerIds: string[];
+  writerKinds: Array<'automation' | 'scene' | 'script'>;
 };
 
 type InboundReferenceIndex = {
@@ -129,6 +153,15 @@ const ambiguousHelperNameTokens = new Set([
   'toggle',
 ]);
 
+const opposingActionTags = new Map<string, string[]>([
+  ['activate', ['deactivate']],
+  ['deactivate', ['activate']],
+  ['open', ['close']],
+  ['close', ['open']],
+  ['lock', ['unlock']],
+  ['unlock', ['lock']],
+]);
+
 function normalizeLabelKey(value: string): string {
   return value.trim().replaceAll(/\s+/gu, ' ').toLowerCase();
 }
@@ -149,6 +182,30 @@ function tokenizeLabel(value: string): string[] {
 
 function uniqueValues(values: string[]): string[] {
   return [...new Set(values)].sort();
+}
+
+function intersectValues(left: string[], right: string[]): string[] {
+  const rightSet = new Set(right);
+  return uniqueValues(left.filter((value) => rightSet.has(value)));
+}
+
+function calculateJaccardScore(left: string[], right: string[]): number {
+  if (left.length === 0 || right.length === 0) {
+    return 0;
+  }
+
+  const intersection = intersectValues(left, right).length;
+  const union = new Set([...left, ...right]).size;
+
+  if (union === 0) {
+    return 0;
+  }
+
+  return intersection / union;
+}
+
+function normalizeRatio(value: number): number {
+  return Math.max(0, Math.min(1, Number(value.toFixed(2))));
 }
 
 function normalizeScore(value: number): number {
@@ -256,6 +313,90 @@ function getHelperLabel(inventory: InventoryGraph, helperId: string): string {
   }
 
   return getEntityLabel(inventory, helperId);
+}
+
+function getWriterLabel(inventory: InventoryGraph, writerId: string): string {
+  const writerKind = getWriterKindForId(inventory, writerId);
+
+  return writerKind === 'scene'
+    ? getSceneLabel(inventory, writerId)
+    : writerKind === 'script'
+      ? getScriptLabel(inventory, writerId)
+      : getAutomationLabel(inventory, writerId);
+}
+
+function formatWriterKind(kind: WriterTarget['kind']): string {
+  return kind;
+}
+
+function classifyServiceActionTag(serviceId: string): string | undefined {
+  if (serviceId === 'script.turn_on') {
+    return 'call_script';
+  }
+
+  if (serviceId === 'scene.turn_on') {
+    return 'activate_scene';
+  }
+
+  if (
+    /^(fan|humidifier|input_boolean|light|media_player|remote|siren|switch|vacuum|valve|water_heater)\.turn_on$/u.test(
+      serviceId,
+    )
+  ) {
+    return 'activate';
+  }
+
+  if (
+    /^(fan|humidifier|input_boolean|light|media_player|remote|siren|switch|vacuum|valve|water_heater)\.turn_off$/u.test(
+      serviceId,
+    )
+  ) {
+    return 'deactivate';
+  }
+
+  if (serviceId === 'cover.open_cover') {
+    return 'open';
+  }
+
+  if (serviceId === 'cover.close_cover') {
+    return 'close';
+  }
+
+  if (serviceId === 'lock.lock') {
+    return 'lock';
+  }
+
+  if (serviceId === 'lock.unlock') {
+    return 'unlock';
+  }
+
+  if (serviceId.endsWith('.toggle')) {
+    return 'toggle';
+  }
+
+  return undefined;
+}
+
+function getWriterActionTags(
+  kind: WriterTarget['kind'],
+  serviceIds: string[],
+): string[] {
+  const actionTags = uniqueValues(
+    serviceIds.flatMap((serviceId) => {
+      const tag = classifyServiceActionTag(serviceId);
+      return tag ? [tag] : [];
+    }),
+  );
+
+  if (actionTags.length > 0) {
+    return actionTags;
+  }
+
+  return kind === 'scene' ? ['activate_scene'] : [];
+}
+
+function getWriterPairKey(leftId: string, rightId: string): string {
+  return [leftId, rightId].sort().join('::');
 }
 
 function getWriterKindForId(
@@ -441,6 +582,491 @@ function buildWriterTargets(inventory: InventoryGraph): WriterTarget[] {
       };
     }),
   ].filter((writer) => writer.targetEntityIds.length > 0);
+}
+
+function buildWriterProfiles(inventory: InventoryGraph): WriterProfile[] {
+  const entityIds = new Set(
+    inventory.entities.map((entity) => entity.entityId),
+  );
+  const writerTargetsById = new Map(
+    buildWriterTargets(inventory).map((writer) => [writer.id, writer] as const),
+  );
+
+  return [
+    ...inventory.automations.map((automation) => ({
+      actionTags: getWriterActionTags(
+        'automation',
+        automation.references?.serviceIds ?? [],
+      ),
+      areaIds: writerTargetsById.get(automation.automationId)?.areaIds ?? [],
+      helperIds: uniqueValues(automation.references?.helperIds ?? []),
+      id: automation.automationId,
+      kind: 'automation' as const,
+      label: automation.name,
+      nameTokens: tokenizeLabel(automation.name),
+      serviceIds: uniqueValues(automation.references?.serviceIds ?? []),
+      targetEntityIds: uniqueValues(
+        automation.targetEntityIds.filter((entityId) =>
+          entityIds.has(entityId),
+        ),
+      ),
+    })),
+    ...inventory.scenes.map((scene) => ({
+      actionTags: getWriterActionTags(
+        'scene',
+        scene.references?.serviceIds ?? [],
+      ),
+      areaIds: writerTargetsById.get(scene.sceneId)?.areaIds ?? [],
+      helperIds: uniqueValues(scene.references?.helperIds ?? []),
+      id: scene.sceneId,
+      kind: 'scene' as const,
+      label: scene.name,
+      nameTokens: tokenizeLabel(scene.name),
+      serviceIds: uniqueValues(scene.references?.serviceIds ?? []),
+      targetEntityIds: uniqueValues(
+        scene.targetEntityIds.filter((entityId) => entityIds.has(entityId)),
+      ),
+    })),
+    ...(inventory.scripts ?? []).map((script) => ({
+      actionTags: getWriterActionTags(
+        'script',
+        script.references?.serviceIds ?? [],
+      ),
+      areaIds: writerTargetsById.get(script.scriptId)?.areaIds ?? [],
+      helperIds: uniqueValues(script.references?.helperIds ?? []),
+      id: script.scriptId,
+      kind: 'script' as const,
+      label: script.name,
+      nameTokens: tokenizeLabel(script.name),
+      serviceIds: uniqueValues(script.references?.serviceIds ?? []),
+      targetEntityIds: uniqueValues(
+        script.targetEntityIds.filter((entityId) => entityIds.has(entityId)),
+      ),
+    })),
+  ];
+}
+
+function calculateWriterRelation(
+  left: WriterProfile,
+  right: WriterProfile,
+): WriterRelation {
+  const sharedAreaIds = intersectValues(left.areaIds, right.areaIds);
+  const sharedHelperIds = intersectValues(left.helperIds, right.helperIds);
+  const sharedNameTokens = intersectValues(left.nameTokens, right.nameTokens);
+  const sharedTargetEntityIds = intersectValues(
+    left.targetEntityIds,
+    right.targetEntityIds,
+  );
+  const score = normalizeRatio(
+    calculateJaccardScore(left.targetEntityIds, right.targetEntityIds) * 0.45 +
+      calculateJaccardScore(left.nameTokens, right.nameTokens) * 0.25 +
+      calculateJaccardScore(left.helperIds, right.helperIds) * 0.15 +
+      calculateJaccardScore(left.areaIds, right.areaIds) * 0.15,
+  );
+
+  return {
+    score,
+    sharedAreaIds,
+    sharedHelperIds,
+    sharedNameTokens,
+    sharedTargetEntityIds,
+  };
+}
+
+function buildWriterRelationIndex(
+  profiles: WriterProfile[],
+): Map<string, WriterRelation> {
+  const relations = new Map<string, WriterRelation>();
+
+  for (let leftIndex = 0; leftIndex < profiles.length; leftIndex += 1) {
+    const left = profiles[leftIndex]!;
+
+    for (
+      let rightIndex = leftIndex + 1;
+      rightIndex < profiles.length;
+      rightIndex += 1
+    ) {
+      const right = profiles[rightIndex]!;
+      relations.set(
+        getWriterPairKey(left.id, right.id),
+        calculateWriterRelation(left, right),
+      );
+    }
+  }
+
+  return relations;
+}
+
+function buildIntentClusters(input: {
+  relationIndex: Map<string, WriterRelation>;
+  writerProfiles: WriterProfile[];
+}): {
+  clusterIdsByWriterId: Map<string, string>;
+  clusters: ScanIntentCluster[];
+} {
+  const profilesById = new Map(
+    input.writerProfiles.map((profile) => [profile.id, profile] as const),
+  );
+  const adjacency = new Map<string, Set<string>>();
+
+  for (const profile of input.writerProfiles) {
+    adjacency.set(profile.id, new Set<string>());
+  }
+
+  for (
+    let leftIndex = 0;
+    leftIndex < input.writerProfiles.length;
+    leftIndex += 1
+  ) {
+    const left = input.writerProfiles[leftIndex]!;
+
+    for (
+      let rightIndex = leftIndex + 1;
+      rightIndex < input.writerProfiles.length;
+      rightIndex += 1
+    ) {
+      const right = input.writerProfiles[rightIndex]!;
+      const relation = input.relationIndex.get(
+        getWriterPairKey(left.id, right.id),
+      );
+
+      if (!relation) {
+        continue;
+      }
+
+      const hasSharedSignal =
+        relation.sharedAreaIds.length > 0 ||
+        relation.sharedHelperIds.length > 0 ||
+        relation.sharedNameTokens.length > 0 ||
+        relation.sharedTargetEntityIds.length > 0;
+
+      if (!hasSharedSignal || relation.score < 0.55) {
+        continue;
+      }
+
+      adjacency.get(left.id)?.add(right.id);
+      adjacency.get(right.id)?.add(left.id);
+    }
+  }
+
+  const visited = new Set<string>();
+  const clusters: ScanIntentCluster[] = [];
+  const clusterIdsByWriterId = new Map<string, string>();
+
+  for (const profile of input.writerProfiles) {
+    if (visited.has(profile.id)) {
+      continue;
+    }
+
+    const queue = [profile.id];
+    const componentIds: string[] = [];
+
+    while (queue.length > 0) {
+      const currentId = queue.shift();
+
+      if (!currentId || visited.has(currentId)) {
+        continue;
+      }
+
+      visited.add(currentId);
+      componentIds.push(currentId);
+
+      for (const neighborId of adjacency.get(currentId) ?? []) {
+        if (!visited.has(neighborId)) {
+          queue.push(neighborId);
+        }
+      }
+    }
+
+    if (componentIds.length < 2) {
+      continue;
+    }
+
+    const componentProfiles = componentIds
+      .map((id) => profilesById.get(id))
+      .filter(
+        (candidate): candidate is WriterProfile => candidate !== undefined,
+      )
+      .sort((left, right) => left.id.localeCompare(right.id));
+    const componentScores: number[] = [];
+
+    for (
+      let leftIndex = 0;
+      leftIndex < componentProfiles.length;
+      leftIndex += 1
+    ) {
+      const left = componentProfiles[leftIndex]!;
+
+      for (
+        let rightIndex = leftIndex + 1;
+        rightIndex < componentProfiles.length;
+        rightIndex += 1
+      ) {
+        const right = componentProfiles[rightIndex]!;
+        const relation = input.relationIndex.get(
+          getWriterPairKey(left.id, right.id),
+        );
+
+        if (relation && relation.score >= 0.55) {
+          componentScores.push(relation.score);
+        }
+      }
+    }
+
+    const clusterId = `intent_cluster:${createHash('sha1')
+      .update(componentProfiles.map((component) => component.id).join('|'))
+      .digest('hex')
+      .slice(0, 10)}`;
+    let averageSimilarity = 0.55;
+
+    if (componentScores.length > 0) {
+      let totalScore = 0;
+
+      for (const score of componentScores) {
+        totalScore += score;
+      }
+
+      averageSimilarity = normalizeRatio(totalScore / componentScores.length);
+    }
+
+    const cluster: ScanIntentCluster = {
+      areaIds: uniqueValues(
+        componentProfiles.flatMap((component) => component.areaIds),
+      ),
+      averageSimilarity,
+      clusterId,
+      conceptTerms: uniqueValues(
+        componentProfiles.flatMap((component) =>
+          component.nameTokens.filter((token) => token.length > 2),
+        ),
+      ),
+      objectIds: componentProfiles.map((component) => component.id),
+      objectKinds: componentProfiles.map((component) => component.kind),
+      objectLabels: componentProfiles.map((component) => component.label),
+      targetEntityIds: uniqueValues(
+        componentProfiles.flatMap((component) => component.targetEntityIds),
+      ),
+    };
+
+    clusters.push(cluster);
+
+    for (const component of componentProfiles) {
+      clusterIdsByWriterId.set(component.id, clusterId);
+    }
+  }
+
+  return {
+    clusterIdsByWriterId,
+    clusters,
+  };
+}
+
+function getOpposingActionPairs(
+  leftActionTags: string[],
+  rightActionTags: string[],
+): string[] {
+  const rightTagSet = new Set(rightActionTags);
+  const pairs: string[] = [];
+
+  for (const leftActionTag of leftActionTags) {
+    for (const opposingTag of opposingActionTags.get(leftActionTag) ?? []) {
+      if (rightTagSet.has(opposingTag)) {
+        pairs.push(`${leftActionTag}:${opposingTag}`);
+      }
+    }
+  }
+
+  return uniqueValues(pairs);
+}
+
+function buildConflictCandidates(input: {
+  clusterIdsByWriterId: Map<string, string>;
+  inventory: InventoryGraph;
+  relationIndex: Map<string, WriterRelation>;
+  writerProfiles: WriterProfile[];
+}): ConflictCandidate[] {
+  const candidates: ConflictCandidate[] = [];
+
+  for (
+    let leftIndex = 0;
+    leftIndex < input.writerProfiles.length;
+    leftIndex += 1
+  ) {
+    const left = input.writerProfiles[leftIndex]!;
+
+    for (
+      let rightIndex = leftIndex + 1;
+      rightIndex < input.writerProfiles.length;
+      rightIndex += 1
+    ) {
+      const right = input.writerProfiles[rightIndex]!;
+      const relation = input.relationIndex.get(
+        getWriterPairKey(left.id, right.id),
+      );
+
+      if (!relation || relation.sharedTargetEntityIds.length === 0) {
+        continue;
+      }
+
+      const opposingPairs = getOpposingActionPairs(
+        left.actionTags,
+        right.actionTags,
+      );
+
+      if (opposingPairs.length === 0) {
+        continue;
+      }
+
+      const leftClusterId = input.clusterIdsByWriterId.get(left.id);
+      const rightClusterId = input.clusterIdsByWriterId.get(right.id);
+      const sameCluster =
+        leftClusterId !== undefined && leftClusterId === rightClusterId;
+      const hasSharedContext =
+        sameCluster ||
+        relation.sharedAreaIds.length > 0 ||
+        relation.sharedHelperIds.length > 0 ||
+        relation.sharedNameTokens.length > 0;
+      const contextScore = normalizeRatio(
+        relation.score + (sameCluster ? 0.1 : 0),
+      );
+
+      if (!hasSharedContext && contextScore < 0.55) {
+        continue;
+      }
+
+      const targetOverlapScore = calculateJaccardScore(
+        left.targetEntityIds,
+        right.targetEntityIds,
+      );
+      const conflictScore = normalizeRatio(
+        targetOverlapScore * 0.45 + 0.35 + contextScore * 0.2,
+      );
+      const sortedWriterIds = [left.id, right.id].sort();
+      const findingId = `likely_conflicting_controls:${sortedWriterIds[0]}:${sortedWriterIds[1]}`;
+      const writerIds = uniqueValues([left.id, right.id]);
+      const writerKinds = uniqueValues([left.kind, right.kind]) as Array<
+        'automation' | 'scene' | 'script'
+      >;
+
+      candidates.push({
+        finding: createFinding({
+          affectedObjects: [
+            createAffectedObject(
+              left.kind,
+              left.id,
+              `${left.label} (${left.id})`,
+            ),
+            createAffectedObject(
+              right.kind,
+              right.id,
+              `${right.label} (${right.id})`,
+            ),
+            ...relation.sharedTargetEntityIds.map((entityId) =>
+              createAffectedObject(
+                'entity',
+                entityId,
+                getEntityLabel(input.inventory, entityId),
+              ),
+            ),
+          ],
+          category: 'conflict_overlap',
+          checkId: 'LIKELY_CONFLICTING_CONTROLS',
+          confidence: normalizeConfidence(0.78 + conflictScore * 0.16),
+          evidence: `${formatWriterKind(left.kind)} ${left.label} and ${formatWriterKind(right.kind)} ${right.label} both target ${relation.sharedTargetEntityIds.join(', ')} with opposing action patterns (${opposingPairs.join(', ')}) and overlapping context.`,
+          evidenceDetails: {
+            actionPairs: opposingPairs,
+            ...(sameCluster && leftClusterId ? {clusterId: leftClusterId} : {}),
+            sharedAreaIds: relation.sharedAreaIds,
+            sharedHelperIds: relation.sharedHelperIds,
+            sharedNameTokens: relation.sharedNameTokens,
+            sharedTargetEntityIds: relation.sharedTargetEntityIds,
+            similarityScore: contextScore,
+            writerIds,
+            writerKinds,
+          },
+          id: findingId,
+          kind: 'likely_conflicting_controls',
+          objectIds: [...writerIds, ...relation.sharedTargetEntityIds],
+          recommendation: {
+            action:
+              'Review whether the competing writers should be gated, sequenced, or consolidated so they stop issuing opposing commands in the same context.',
+            steps: [
+              'Inspect the overlapping writers and confirm whether they should both control the same targets.',
+              'Adjust gates, timing, or ownership so one intent does not immediately fight the other.',
+              'Rerun the scan to confirm the conflict candidate is reduced or removed.',
+            ],
+          },
+          scores: {
+            coupling: normalizeScore(
+              42 + relation.sharedTargetEntityIds.length * 14,
+            ),
+            fragility: normalizeScore(38 + Math.round(conflictScore * 40)),
+          },
+          severity:
+            conflictScore >= 0.8 || relation.sharedTargetEntityIds.length >= 2
+              ? 'high'
+              : 'medium',
+          summary: `${left.label} and ${right.label} issue opposing control patterns across ${relation.sharedTargetEntityIds.length} shared target(s).`,
+          tags: [
+            'likely-conflict',
+            ...relation.sharedAreaIds,
+            ...(sameCluster ? ['intent-cluster-overlap'] : []),
+          ],
+          title: `Likely conflicting controls: ${left.label} vs ${right.label}`,
+          whyItMatters:
+            'Competing writers on the same targets can cause flicker, race-like behavior, or brittle household logic that is hard to debug later.',
+        }),
+        sharedEntityIds: relation.sharedTargetEntityIds,
+        writerIds,
+        writerKinds,
+      });
+    }
+  }
+
+  return candidates;
+}
+
+function buildConflictHotspots(
+  inventory: InventoryGraph,
+  candidates: ConflictCandidate[],
+): ScanConflictHotspot[] {
+  const hotspots = new Map<
+    string,
+    {
+      findingIds: string[];
+      writerIds: string[];
+      writerKinds: Array<'automation' | 'scene' | 'script'>;
+    }
+  >();
+
+  for (const candidate of candidates) {
+    for (const entityId of candidate.sharedEntityIds) {
+      const current = hotspots.get(entityId) ?? {
+        findingIds: [],
+        writerIds: [],
+        writerKinds: [],
+      };
+
+      hotspots.set(entityId, {
+        findingIds: uniqueValues([...current.findingIds, candidate.finding.id]),
+        writerIds: uniqueValues([...current.writerIds, ...candidate.writerIds]),
+        writerKinds: uniqueValues([
+          ...current.writerKinds,
+          ...candidate.writerKinds,
+        ]) as Array<'automation' | 'scene' | 'script'>,
+      });
+    }
+  }
+
+  return [...hotspots.entries()]
+    .map(([entityId, hotspot]) => ({
+      entityId,
+      entityLabel: getEntityLabel(inventory, entityId),
+      findingIds: hotspot.findingIds,
+      writerIds: hotspot.writerIds,
+      writerKinds: hotspot.writerKinds,
+    }))
+    .sort((left, right) => left.entityId.localeCompare(right.entityId));
 }
 
 function buildOwnershipHotspots(inventory: InventoryGraph): OwnershipHotspot[] {
@@ -1134,6 +1760,135 @@ function findSceneInvalidTargets(inventory: InventoryGraph): Finding[] {
   });
 }
 
+function findTemplateMissingReferences(inventory: InventoryGraph): Finding[] {
+  const knownEntityIds = new Set(
+    inventory.entities.map((entity) => entity.entityId),
+  );
+  const knownHelperIds = new Set(
+    getAuditHelpers(inventory).map((helper) => helper.helperId),
+  );
+  const knownSceneIds = new Set(inventory.scenes.map((scene) => scene.sceneId));
+  const knownScriptIds = new Set(
+    (inventory.scripts ?? []).map((script) => script.scriptId),
+  );
+
+  return (inventory.templates ?? []).flatMap((template) => {
+    const missingEntityIds = uniqueValues(
+      template.entityIds.filter((entityId) => !knownEntityIds.has(entityId)),
+    );
+    const missingHelperIds = uniqueValues(
+      template.helperIds.filter((helperId) => !knownHelperIds.has(helperId)),
+    );
+    const missingSceneIds = uniqueValues(
+      template.sceneIds.filter((sceneId) => !knownSceneIds.has(sceneId)),
+    );
+    const missingScriptIds = uniqueValues(
+      template.scriptIds.filter((scriptId) => !knownScriptIds.has(scriptId)),
+    );
+    const missingReferenceIds = uniqueValues([
+      ...missingEntityIds,
+      ...missingHelperIds,
+      ...missingSceneIds,
+      ...missingScriptIds,
+    ]);
+
+    if (missingReferenceIds.length === 0) {
+      return [];
+    }
+
+    return [
+      createFinding({
+        affectedObjects: [
+          createAffectedObject(
+            'template',
+            template.templateId,
+            getTemplateLabel(template.templateId, template.sourceObjectId),
+          ),
+          ...(template.sourceObjectId
+            ? [
+                createSourceObjectAffectedObject(
+                  inventory,
+                  template.sourceObjectId,
+                ),
+              ]
+            : []),
+          ...missingEntityIds.map((entityId) =>
+            createAffectedObject('entity', entityId, entityId),
+          ),
+          ...missingHelperIds.map((helperId) =>
+            createAffectedObject(
+              'helper',
+              helperId,
+              getHelperLabel(inventory, helperId),
+            ),
+          ),
+          ...missingSceneIds.map((sceneId) =>
+            createAffectedObject('scene', sceneId, sceneId),
+          ),
+          ...missingScriptIds.map((scriptId) =>
+            createAffectedObject('script', scriptId, scriptId),
+          ),
+        ],
+        category: 'broken_references',
+        checkId: 'TEMPLATE_MISSING_REFERENCE',
+        confidence: normalizeConfidence(
+          0.8 +
+            Math.min(
+              0.16,
+              (missingReferenceIds.length +
+                missingSceneIds.length +
+                missingScriptIds.length) *
+                0.03,
+            ),
+        ),
+        evidence: `${getTemplateLabel(template.templateId, template.sourceObjectId)} references ${missingReferenceIds.length} missing object(s): ${missingReferenceIds.join(', ')}.`,
+        evidenceDetails: {
+          missingEntityIds,
+          missingHelperIds,
+          missingReferenceCount: missingReferenceIds.length,
+          missingSceneIds,
+          missingScriptIds,
+          ...(template.sourceObjectId
+            ? {sourceObjectId: template.sourceObjectId}
+            : {}),
+          sourceType: template.sourceType,
+          templateId: template.templateId,
+        },
+        id: `template_missing_reference:${template.templateId}`,
+        kind: 'template_missing_reference',
+        objectIds: [
+          template.templateId,
+          ...(template.sourceObjectId ? [template.sourceObjectId] : []),
+          ...missingReferenceIds,
+        ],
+        recommendation: {
+          action:
+            'Open the template source and repair or remove the missing references before relying on its output.',
+          steps: [
+            'Inspect the template source object or YAML file.',
+            'Replace or remove the missing entity, helper, scene, or script references.',
+            'Rerun the scan to confirm the broken template reference clears.',
+          ],
+        },
+        scores: {
+          fragility: normalizeScore(46 + missingReferenceIds.length * 12),
+        },
+        severity:
+          missingSceneIds.length > 0 ||
+          missingScriptIds.length > 0 ||
+          missingReferenceIds.length >= 2
+            ? 'high'
+            : 'medium',
+        summary: `${template.templateId} references ${missingReferenceIds.length} missing object(s).`,
+        tags: ['template-missing-reference'],
+        title: `Template has missing references: ${template.templateId}`,
+        whyItMatters:
+          'Templates with missing dependencies can silently degrade runtime logic and produce brittle conditions that are hard to spot in day-to-day use.',
+      }),
+    ];
+  });
+}
+
 function findAssistantContextBloat(inventory: InventoryGraph): Finding[] {
   return inventory.entities
     .filter((entity) => (entity.assistantExposures?.length ?? 0) > 1)
@@ -1582,6 +2337,43 @@ function getEntityLabel(inventory: InventoryGraph, entityId: string): string {
   return `${entity.displayName} (${entity.entityId})`;
 }
 
+function getTemplateLabel(templateId: string, sourceObjectId?: string): string {
+  return sourceObjectId
+    ? `Template in ${sourceObjectId}`
+    : `Template ${templateId}`;
+}
+
+function createSourceObjectAffectedObject(
+  inventory: InventoryGraph,
+  objectId: string,
+): FindingAffectedObject {
+  if (objectId.startsWith('automation.')) {
+    return createAffectedObject(
+      'automation',
+      objectId,
+      `${getAutomationLabel(inventory, objectId)} (${objectId})`,
+    );
+  }
+
+  if (objectId.startsWith('scene.')) {
+    return createAffectedObject(
+      'scene',
+      objectId,
+      `${getSceneLabel(inventory, objectId)} (${objectId})`,
+    );
+  }
+
+  if (objectId.startsWith('script.')) {
+    return createAffectedObject(
+      'script',
+      objectId,
+      `${getScriptLabel(inventory, objectId)} (${objectId})`,
+    );
+  }
+
+  return createAffectedObject('template', objectId, objectId);
+}
+
 function formatScalar(value: string | null | undefined): string {
   return value === null || value === undefined ? 'null' : `"${value}"`;
 }
@@ -1990,6 +2782,7 @@ export function createFixActions(
       case 'dangling_label_reference':
       case 'entity_ownership_hotspot':
       case 'highly_coupled_automation':
+      case 'likely_conflicting_controls':
       case 'missing_area_assignment':
       case 'missing_floor_assignment':
       case 'orphaned_entity_device':
@@ -1997,6 +2790,7 @@ export function createFixActions(
         return [];
       }
 
+      case 'template_missing_reference':
       case 'unused_helper':
       case 'unused_scene':
       case 'unused_script':
@@ -2191,6 +2985,44 @@ export function createFindingAdvisories(
         ];
       }
 
+      case 'likely_conflicting_controls': {
+        return [
+          createGenericAdvisory(
+            inventory,
+            finding,
+            'Conflict resolution is advisory because only the operator can decide which writer should win, how contexts should be separated, or whether the overlap is intentional.',
+            'Review the competing writers and separate or sequence them so they stop issuing opposing control patterns.',
+            [
+              'Inspect the writers targeting the same entities.',
+              'Adjust gates, timing, or ownership so the writers do not fight each other.',
+              'Rerun the scan to confirm the conflict candidate is reduced.',
+            ],
+            [
+              'Changing the wrong automation, script, or scene can alter live behavior in ways that are difficult to spot immediately.',
+            ],
+          ),
+        ];
+      }
+
+      case 'template_missing_reference': {
+        return [
+          createGenericAdvisory(
+            inventory,
+            finding,
+            'Template repair is advisory because the correct replacement entities, helpers, or scripts depend on operator intent and YAML context.',
+            'Review the template source and repair or remove the missing references.',
+            [
+              'Open the template source object or YAML file.',
+              'Replace or remove missing entity, helper, scene, or script references.',
+              'Rerun the scan to confirm the broken template reference clears.',
+            ],
+            [
+              'Repairing the wrong template reference can change runtime conditions, templated sensors, or downstream automation logic.',
+            ],
+          ),
+        ];
+      }
+
       case 'unused_helper': {
         return [
           createGenericAdvisory(
@@ -2379,8 +3211,11 @@ function buildAuditSummary(
   inventory: InventoryGraph,
   findings: Finding[],
   hotspots: OwnershipHotspot[],
+  conflictCandidates: ConflictCandidate[],
+  intentClusters: ScanIntentCluster[],
 ): ScanAuditSummary {
   const auditHelpers = getAuditHelpers(inventory);
+  const conflictHotspots = buildConflictHotspots(inventory, conflictCandidates);
 
   return {
     cleanupCandidateIds: uniqueValues(
@@ -2388,6 +3223,10 @@ function buildAuditSummary(
         .filter((finding) => finding.category === 'dead_legacy_objects')
         .map((finding) => finding.id),
     ),
+    conflictCandidateIds: uniqueValues(
+      conflictCandidates.map((candidate) => candidate.finding.id),
+    ),
+    conflictHotspots,
     objectCounts: {
       areas: inventory.areas.length,
       automations: inventory.automations.length,
@@ -2401,6 +3240,7 @@ function buildAuditSummary(
       scripts: inventory.scripts?.length ?? 0,
       templates: inventory.templates?.length ?? 0,
     },
+    intentClusters,
     ownershipHotspotFindingIds: uniqueValues(
       hotspots.map((hotspot) => hotspot.findingId),
     ),
@@ -2413,7 +3253,10 @@ function buildAuditSummary(
 
 function buildFindings(
   inventory: InventoryGraph,
-  hotspots: OwnershipHotspot[],
+  input: {
+    conflictCandidates: ConflictCandidate[];
+    hotspots: OwnershipHotspot[];
+  },
 ): Finding[] {
   const inboundReferences = buildInboundReferenceIndex(inventory);
 
@@ -2430,9 +3273,11 @@ function buildFindings(
     ...findDanglingLabelReferences(inventory),
     ...findAutomationInvalidTargets(inventory),
     ...findSceneInvalidTargets(inventory),
+    ...findTemplateMissingReferences(inventory),
     ...findAssistantContextBloat(inventory),
-    ...findEntityOwnershipHotspots(inventory, hotspots),
+    ...findEntityOwnershipHotspots(inventory, input.hotspots),
     ...findHighlyCoupledAutomations(inventory),
+    ...input.conflictCandidates.map((candidate) => candidate.finding),
   ]);
 }
 
@@ -2458,9 +3303,30 @@ export function runScan(
   inventory: InventoryGraph,
   options: RunScanOptions = {},
 ): ScanRun {
+  const writerProfiles = buildWriterProfiles(inventory);
+  const relationIndex = buildWriterRelationIndex(writerProfiles);
+  const {clusterIdsByWriterId, clusters} = buildIntentClusters({
+    relationIndex,
+    writerProfiles,
+  });
   const hotspots = buildOwnershipHotspots(inventory);
-  const findings = buildFindings(inventory, hotspots);
-  const audit = buildAuditSummary(inventory, findings, hotspots);
+  const conflictCandidates = buildConflictCandidates({
+    clusterIdsByWriterId,
+    inventory,
+    relationIndex,
+    writerProfiles,
+  });
+  const findings = buildFindings(inventory, {
+    conflictCandidates,
+    hotspots,
+  });
+  const audit = buildAuditSummary(
+    inventory,
+    findings,
+    hotspots,
+    conflictCandidates,
+    clusters,
+  );
   const mode = options.mode ?? inventory.source;
   const profileName = options.profileName ?? null;
   const fingerprint = createScanFingerprint({

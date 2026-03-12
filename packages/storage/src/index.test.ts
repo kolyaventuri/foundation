@@ -900,6 +900,8 @@ describe('storage service', () => {
         .replace(/Scanned at: .+/u, 'Scanned at: <scannedAt>');
 
       expect(normalizedMarkdown).toContain('## Audit Summary');
+      expect(normalizedMarkdown).toContain('Conflict candidate finding IDs');
+      expect(normalizedMarkdown).toContain('Intent clusters: None');
       expect(normalizedMarkdown).toContain('Check ID: STALE_ENTITY');
       expect(normalizedMarkdown).toContain('## Fix Actions');
       expect(normalizedMarkdown).toContain(

@@ -22,12 +22,14 @@ export type FindingKind =
   | 'duplicate_name'
   | 'entity_ownership_hotspot'
   | 'highly_coupled_automation'
+  | 'likely_conflicting_controls'
   | 'missing_area_assignment'
   | 'missing_floor_assignment'
   | 'orphaned_entity_device'
   | 'scene_invalid_target'
   | 'shared_label_observation'
   | 'stale_entity'
+  | 'template_missing_reference'
   | 'unused_helper'
   | 'unused_scene'
   | 'unused_script';
@@ -416,9 +418,31 @@ export type ScanOwnershipHotspot = {
   writerKinds: Array<'automation' | 'scene' | 'script'>;
 };
 
+export type ScanConflictHotspot = {
+  entityId: string;
+  entityLabel: string;
+  findingIds: string[];
+  writerIds: string[];
+  writerKinds: Array<'automation' | 'scene' | 'script'>;
+};
+
+export type ScanIntentCluster = {
+  areaIds: string[];
+  averageSimilarity: number;
+  clusterId: string;
+  conceptTerms: string[];
+  objectIds: string[];
+  objectKinds: Array<'automation' | 'scene' | 'script'>;
+  objectLabels: string[];
+  targetEntityIds: string[];
+};
+
 export type ScanAuditSummary = {
   cleanupCandidateIds: string[];
+  conflictCandidateIds: string[];
+  conflictHotspots: ScanConflictHotspot[];
   objectCounts: ScanObjectCounts;
+  intentClusters: ScanIntentCluster[];
   ownershipHotspotFindingIds: string[];
   ownershipHotspots: ScanOwnershipHotspot[];
   scores: ScanAuditScores;
@@ -577,6 +601,15 @@ const findingDefinitions = {
     whyItMatters:
       'Broad automations are harder to validate and repair because one change can affect several rooms, devices, or behavior paths at once.',
   },
+  likely_conflicting_controls: {
+    definition:
+      'A likely conflicting controls finding means two scan-visible writers target the same entity set with opposing action patterns in overlapping context.',
+    label: 'Likely conflicts',
+    operatorGuidance:
+      'Review whether the writers should be sequenced, narrowed, gated differently, or consolidated so they stop competing for the same targets.',
+    whyItMatters:
+      'Opposing writers on the same targets are a common source of flicker, surprising state changes, and hard-to-reproduce regressions.',
+  },
   missing_area_assignment: {
     definition:
       'A missing area assignment means the entity and its backing device do not currently resolve to any Home Assistant area.',
@@ -630,6 +663,15 @@ const findingDefinitions = {
       'Confirm the entity is no longer needed, then disable it in the entity registry or remove its source integration or helper.',
     whyItMatters:
       'Stale entities add noise to dashboards, pickers, repairs, and assistant context, and they can keep dead integrations or helpers looking active.',
+  },
+  template_missing_reference: {
+    definition:
+      'A template missing reference means a template still points at entities, helpers, scenes, or scripts that are missing from the current scan-visible graph.',
+    label: 'Template references',
+    operatorGuidance:
+      'Open the template source, repair or remove the missing references, and rerun the scan.',
+    whyItMatters:
+      'Broken template references can silently produce wrong logic, fallback values, or brittle runtime behavior that is hard to trace later.',
   },
   unused_helper: {
     definition:
@@ -715,6 +757,7 @@ export function getFindingActionKind(
     case 'dangling_label_reference':
     case 'entity_ownership_hotspot':
     case 'highly_coupled_automation':
+    case 'likely_conflicting_controls':
     case 'missing_area_assignment':
     case 'missing_floor_assignment':
     case 'orphaned_entity_device':
@@ -723,6 +766,7 @@ export function getFindingActionKind(
       return undefined;
     }
 
+    case 'template_missing_reference':
     case 'unused_helper':
     case 'unused_scene':
     case 'unused_script': {

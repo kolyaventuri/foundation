@@ -200,7 +200,7 @@ const phaseTwoAuditInventory: InventoryGraph = {
       ],
       sceneCount: 2,
       scriptCount: 2,
-      templateCount: 1,
+      templateCount: 2,
     },
   ],
   devices: [],
@@ -338,6 +338,20 @@ const phaseTwoAuditInventory: InventoryGraph = {
       templateId:
         'automation:automation.evening_routine:action.0.variables.mode',
       templateText: "{{ states('input_boolean.mode') }}",
+    },
+    {
+      entityIds: ['sensor.missing_temperature'],
+      helperIds: [],
+      parseValid: true,
+      sceneIds: [],
+      scriptIds: ['script.missing_cleanup'],
+      sourceObjectId: 'automation.kitchen_presence',
+      sourcePath: 'automations.yaml',
+      sourceType: 'automation',
+      templateId:
+        'automation:automation.kitchen_presence:condition.0.value_template',
+      templateText:
+        "{{ states('sensor.missing_temperature') == 'on' and is_state('script.missing_cleanup', 'off') }}",
     },
   ],
 };
@@ -481,6 +495,8 @@ describe('scan-engine', () => {
         'ambiguous_helper_name',
         'entity_ownership_hotspot',
         'highly_coupled_automation',
+        'likely_conflicting_controls',
+        'template_missing_reference',
         'unused_helper',
         'unused_scene',
         'unused_script',
@@ -492,6 +508,12 @@ describe('scan-engine', () => {
     );
     const hotspotFinding = scan.findings.find(
       (finding) => finding.kind === 'entity_ownership_hotspot',
+    );
+    const conflictFinding = scan.findings.find(
+      (finding) => finding.kind === 'likely_conflicting_controls',
+    );
+    const templateFinding = scan.findings.find(
+      (finding) => finding.kind === 'template_missing_reference',
     );
     const unusedHelperFinding = scan.findings.find(
       (finding) => finding.id === 'unused_helper:input_boolean.night_toggle',
@@ -505,6 +527,8 @@ describe('scan-engine', () => {
 
     expect(helperFinding).toBeDefined();
     expect(hotspotFinding).toBeDefined();
+    expect(conflictFinding).toBeDefined();
+    expect(templateFinding).toBeDefined();
     expect(unusedHelperFinding).toBeDefined();
     expect(unusedSceneFinding).toBeDefined();
     expect(unusedScriptFinding).toBeDefined();
@@ -513,6 +537,8 @@ describe('scan-engine', () => {
     if (
       !helperFinding ||
       !hotspotFinding ||
+      !conflictFinding ||
+      !templateFinding ||
       !unusedHelperFinding ||
       !unusedSceneFinding ||
       !unusedScriptFinding ||
@@ -531,6 +557,24 @@ describe('scan-engine', () => {
     expect(hotspotFinding.relatedFindingIds).toContain(
       'highly_coupled_automation:automation.evening_routine',
     );
+
+    expect(conflictFinding.category).toBe('conflict_overlap');
+    expect(conflictFinding.checkId).toBe('LIKELY_CONFLICTING_CONTROLS');
+    expect(conflictFinding.objectIds).toEqual(
+      expect.arrayContaining([
+        'automation.kitchen_presence',
+        'automation.kitchen_override',
+        'light.kitchen_main',
+      ]),
+    );
+
+    expect(templateFinding.category).toBe('broken_references');
+    expect(templateFinding.evidenceDetails?.missingEntityIds).toEqual([
+      'sensor.missing_temperature',
+    ]);
+    expect(templateFinding.evidenceDetails?.missingScriptIds).toEqual([
+      'script.missing_cleanup',
+    ]);
 
     expect(unusedHelperFinding.category).toBe('dead_legacy_objects');
     expect(unusedHelperFinding.evidenceDetails?.helperId).toBe(
@@ -565,12 +609,35 @@ describe('scan-engine', () => {
         'unused_script:script.legacy_shutdown',
       ]),
     );
+    expect(scan.audit.conflictCandidateIds).toEqual(
+      expect.arrayContaining([conflictFinding.id]),
+    );
+    expect(scan.audit.conflictHotspots).toHaveLength(1);
+    expect(scan.audit.conflictHotspots[0]?.entityId).toBe('light.kitchen_main');
+    expect(scan.audit.conflictHotspots[0]?.findingIds).toEqual([
+      conflictFinding.id,
+    ]);
+    expect(scan.audit.conflictHotspots[0]?.writerIds).toEqual(
+      expect.arrayContaining([
+        'automation.kitchen_override',
+        'automation.kitchen_presence',
+      ]),
+    );
+    expect(scan.audit.intentClusters).toHaveLength(1);
+    expect(scan.audit.intentClusters[0]?.objectIds).toEqual(
+      expect.arrayContaining([
+        'automation.kitchen_override',
+        'automation.kitchen_presence',
+        'scene.kitchen_evening',
+        'script.kitchen_boost',
+      ]),
+    );
     expect(scan.audit.objectCounts).toMatchObject({
       configModules: 1,
       helpers: 2,
       scenes: 2,
       scripts: 2,
-      templates: 1,
+      templates: 2,
     });
     expect(scan.audit.scores.clarity).toEqual(expect.any(Number));
     expect(scan.audit.scores.correctness).toEqual(expect.any(Number));

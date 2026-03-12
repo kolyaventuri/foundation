@@ -81,6 +81,7 @@ The repo already has meaningful groundwork in place:
 - persisted scan runs with findings, passes, notes, fingerprints, history diffs, enrichment metadata, and optional backup checkpoints
 - bounded read-only config parsing for `configuration.yaml` and supported include patterns
 - deterministic findings for duplicate names, stale entities, orphaned entity/device links, missing area assignments, missing floor assignments, dangling labels, invalid automation targets, invalid scene targets, and assistant exposure bloat
+- Phase 2 audit-model expansion for scripts, helpers, templates, config modules, richer finding metadata, conflict candidates, template missing references, ownership hotspots, unused objects, intent clusters, and install-level audit scoring
 - review-oriented dry-run repair flows in the web workbench and CLI
 
 This means the project is not starting from zero. Phase 1 is complete, and the immediate priority is moving deeper into Phase 2 while carrying forward non-blocking hardening work into later phases.
@@ -113,12 +114,24 @@ Goal: make the audit engine meaningfully smarter about Home Assistant behavior, 
 
 Status: active phase
 
+Checkpoint reached:
+- normalized scan coverage now includes scripts, helpers, templates, config modules, and relationship-derived writer profiles
+- findings now carry richer audit metadata such as categories, confidence, structured evidence details, recommendations, scores, tags, and related object context
+- deterministic checks now cover ambiguous helper names, unused helpers/scenes/scripts, ownership hotspots, highly coupled automations, likely conflicting controls, and template missing references
+- audit summaries now persist install-level scores, cleanup candidate IDs, conflict candidate IDs, conflict hotspots, and intent clusters
+- markdown exports include the richer audit summary, and the web workbench now surfaces an audit overview with scores, conflict hotspots, and intent clusters
+
 Deliverables:
 - expand the normalized scan model beyond entities, automations, and scenes to include scripts, helpers, templates, config modules, and graph-derived relationships
 - evolve findings from the current minimal shape into richer audit records with categories, confidence, structured evidence, recommendations, scores, tags, and related findings
 - ship the next high-value deterministic checks from the audit spec, especially broken references, unused objects, ownership hotspots, likely conflicts, ambiguous helper names, and highly coupled automations
 - add install-level scores, cleanup candidates, conflict hotspots, and early intent-cluster outputs while keeping compatibility with the current scan/history/workbench flow
 - improve fixture coverage and performance for larger Home Assistant inventories
+
+Immediate next slice:
+- thread the richer audit summary through more operator surfaces, especially CLI/API scan summaries and deeper web workbench affordances
+- keep adding deterministic checks from the audit spec while tightening fixture coverage around larger inventories and graph-heavy scans
+- reduce scan-engine complexity in the new clustering/conflict code as follow-up cleanup rather than blocking current behavior
 
 Exit criteria:
 - the system can explain not only what is present, but where logic is brittle, duplicated, conflicting, stale, or structurally risky

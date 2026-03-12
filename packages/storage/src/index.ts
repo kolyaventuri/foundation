@@ -973,10 +973,24 @@ export function renderScanExportMarkdown(bundle: ScanExportBundle): string {
         bundle.scan.audit.cleanupCandidateIds,
       ),
       formatLineItemList(
+        'Conflict candidate finding IDs',
+        bundle.scan.audit.conflictCandidateIds,
+      ),
+      formatLineItemList(
         'Ownership hotspot finding IDs',
         bundle.scan.audit.ownershipHotspotFindingIds,
       ),
     );
+
+    if (bundle.scan.audit.conflictHotspots.length === 0) {
+      lines.push('- Conflict hotspots: None');
+    } else {
+      for (const hotspot of bundle.scan.audit.conflictHotspots) {
+        lines.push(
+          `- Conflict hotspot: ${hotspot.entityLabel} (${hotspot.entityId}) via ${hotspot.writerIds.join(', ')}`,
+        );
+      }
+    }
 
     if (bundle.scan.audit.ownershipHotspots.length === 0) {
       lines.push('- Ownership hotspots: None');
@@ -984,6 +998,16 @@ export function renderScanExportMarkdown(bundle: ScanExportBundle): string {
       for (const hotspot of bundle.scan.audit.ownershipHotspots) {
         lines.push(
           `- Ownership hotspot: ${hotspot.entityLabel} (${hotspot.entityId}) via ${hotspot.writerIds.join(', ')}`,
+        );
+      }
+    }
+
+    if (bundle.scan.audit.intentClusters.length === 0) {
+      lines.push('- Intent clusters: None');
+    } else {
+      for (const cluster of bundle.scan.audit.intentClusters) {
+        lines.push(
+          `- Intent cluster: ${cluster.clusterId} via ${cluster.objectIds.join(', ')}`,
         );
       }
     }

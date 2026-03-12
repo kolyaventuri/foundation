@@ -37,6 +37,13 @@ import {
   useState,
 } from 'react';
 import {
+  buildAuditScoreCards,
+  buildAuditSignalChips,
+  buildConflictHotspotHighlights,
+  buildIntentClusterHighlights,
+  summarizeAuditObjectCounts,
+} from './audit-summary';
+import {
   buildWorkbenchFindingRecords,
   filterWorkbenchFindingRecords,
   flattenRailGroups,
@@ -130,6 +137,10 @@ const findingKindFilterOptions = [
     value: 'highly_coupled_automation',
   },
   {
+    label: getFindingDefinition('likely_conflicting_controls').label,
+    value: 'likely_conflicting_controls',
+  },
+  {
     label: getFindingDefinition('missing_area_assignment').label,
     value: 'missing_area_assignment',
   },
@@ -148,6 +159,10 @@ const findingKindFilterOptions = [
   {
     label: getFindingDefinition('stale_entity').label,
     value: 'stale_entity',
+  },
+  {
+    label: getFindingDefinition('template_missing_reference').label,
+    value: 'template_missing_reference',
   },
   {
     label: getFindingDefinition('unused_helper').label,
@@ -237,6 +252,37 @@ function formatScanMode(value: ScanDetail['mode']): string {
 
 function formatScanAction(mode: ScanMode): string {
   return mode === 'live' ? 'Run live scan' : 'Run mock scan';
+}
+
+function formatAuditScore(value: number): string {
+  return `${value}/100`;
+}
+
+function getAuditScoreToneClass(
+  key: ReturnType<typeof buildAuditScoreCards>[number]['key'],
+  value: number,
+): string {
+  if (key === 'cleanupOpportunity') {
+    if (value <= 25) {
+      return 'border-success/20 bg-success/10 text-success';
+    }
+
+    if (value <= 50) {
+      return 'border-amber-800/20 bg-amber-700/10 text-amber-900';
+    }
+
+    return 'border-accent/20 bg-accent/10 text-accent';
+  }
+
+  if (value >= 75) {
+    return 'border-success/20 bg-success/10 text-success';
+  }
+
+  if (value >= 55) {
+    return 'border-amber-800/20 bg-amber-700/10 text-amber-900';
+  }
+
+  return 'border-accent/20 bg-accent/10 text-accent';
 }
 
 function readRoute(): WorkspaceRoute {
@@ -1216,38 +1262,43 @@ export function App() {
               </div>
             </div>
             {selectedScan && (
-              <div className="mt-5 grid gap-3 md:grid-cols-3">
-                <article className="rounded-[1rem] border border-black/8 bg-ink-strong/4 px-4 py-3">
-                  <p className="text-xs uppercase tracking-[0.16em] text-ink-soft">
-                    Scan posture
-                  </p>
-                  <p className="mt-2 text-sm leading-6 text-ink-soft">
-                    {formatScanMode(selectedScan.mode)} •{' '}
-                    {selectedScan.passes.length} pass
-                    {selectedScan.passes.length === 1 ? '' : 'es'}
-                  </p>
-                </article>
-                <article className="rounded-[1rem] border border-black/8 bg-ink-strong/4 px-4 py-3">
-                  <p className="text-xs uppercase tracking-[0.16em] text-ink-soft">
-                    Scan notes
-                  </p>
-                  <p className="mt-2 text-sm leading-6 text-ink-soft">
-                    {selectedScan.notes.length === 0
-                      ? 'No scan notes recorded.'
-                      : `${selectedScan.notes.length} note(s) recorded across discovery and config passes.`}
-                  </p>
-                </article>
-                <article className="rounded-[1rem] border border-black/8 bg-ink-strong/4 px-4 py-3">
-                  <p className="text-xs uppercase tracking-[0.16em] text-ink-soft">
-                    Backup checkpoint
-                  </p>
-                  <p className="mt-2 text-sm leading-6 text-ink-soft">
-                    {selectedScan.backupCheckpoint
-                      ? `${selectedScan.backupCheckpoint.status.replaceAll('_', ' ')} • ${selectedScan.backupCheckpoint.summary}`
-                      : 'No backup checkpoint recorded for this scan.'}
-                  </p>
-                </article>
-              </div>
+              <>
+                <div className="mt-5 grid gap-3 md:grid-cols-3">
+                  <article className="rounded-[1rem] border border-black/8 bg-ink-strong/4 px-4 py-3">
+                    <p className="text-xs uppercase tracking-[0.16em] text-ink-soft">
+                      Scan posture
+                    </p>
+                    <p className="mt-2 text-sm leading-6 text-ink-soft">
+                      {formatScanMode(selectedScan.mode)} •{' '}
+                      {selectedScan.passes.length} pass
+                      {selectedScan.passes.length === 1 ? '' : 'es'}
+                    </p>
+                  </article>
+                  <article className="rounded-[1rem] border border-black/8 bg-ink-strong/4 px-4 py-3">
+                    <p className="text-xs uppercase tracking-[0.16em] text-ink-soft">
+                      Scan notes
+                    </p>
+                    <p className="mt-2 text-sm leading-6 text-ink-soft">
+                      {selectedScan.notes.length === 0
+                        ? 'No scan notes recorded.'
+                        : `${selectedScan.notes.length} note(s) recorded across discovery and config passes.`}
+                    </p>
+                  </article>
+                  <article className="rounded-[1rem] border border-black/8 bg-ink-strong/4 px-4 py-3">
+                    <p className="text-xs uppercase tracking-[0.16em] text-ink-soft">
+                      Backup checkpoint
+                    </p>
+                    <p className="mt-2 text-sm leading-6 text-ink-soft">
+                      {selectedScan.backupCheckpoint
+                        ? `${selectedScan.backupCheckpoint.status.replaceAll('_', ' ')} • ${selectedScan.backupCheckpoint.summary}`
+                        : 'No backup checkpoint recorded for this scan.'}
+                    </p>
+                  </article>
+                </div>
+                {selectedScan.audit && (
+                  <ScanAuditOverview audit={selectedScan.audit} />
+                )}
+              </>
             )}
             {errorMessage && (
               <p className="mt-4 text-sm text-ink-soft">{errorMessage}</p>
@@ -1693,6 +1744,137 @@ function LandingView({
         </div>
       </section>
     </>
+  );
+}
+
+function ScanAuditOverview({audit}: {audit: NonNullable<ScanDetail['audit']>}) {
+  const scoreCards = buildAuditScoreCards(audit);
+  const signalChips = buildAuditSignalChips(audit);
+  const conflictHighlights = buildConflictHotspotHighlights(audit);
+  const intentHighlights = buildIntentClusterHighlights(audit);
+
+  return (
+    <section className="mt-5 grid gap-3 xl:grid-cols-[minmax(0,1.45fr)_minmax(0,1fr)_minmax(0,1fr)]">
+      <article className="rounded-[1rem] border border-black/8 bg-ink-strong/4 px-4 py-3">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <p className="text-xs uppercase tracking-[0.16em] text-ink-soft">
+              Audit summary
+            </p>
+            <p className="mt-2 text-sm leading-6 text-ink-soft">
+              {summarizeAuditObjectCounts(audit.objectCounts)}
+            </p>
+          </div>
+          <span className="rounded-full border border-black/10 bg-white/75 px-3 py-2 text-xs font-semibold tracking-[0.16em] text-ink-soft uppercase">
+            {audit.conflictCandidateIds.length} conflicts
+          </span>
+        </div>
+
+        <div className="mt-4 grid gap-2 sm:grid-cols-2 xl:grid-cols-5">
+          {scoreCards.map((card) => (
+            <div
+              className={`rounded-[0.9rem] border px-3 py-3 ${getAuditScoreToneClass(card.key, card.value)}`}
+              key={card.key}
+            >
+              <p className="text-[0.7rem] font-semibold tracking-[0.14em] uppercase">
+                {card.label}
+              </p>
+              <p className="mt-2 text-lg font-semibold">
+                {formatAuditScore(card.value)}
+              </p>
+            </div>
+          ))}
+        </div>
+
+        <div className="mt-4 flex flex-wrap gap-2">
+          {signalChips.map((chip) => (
+            <span
+              className="rounded-full border border-black/10 bg-white/75 px-3 py-2 text-xs font-semibold text-ink-soft"
+              key={chip.key}
+            >
+              {chip.label}: {chip.value}
+            </span>
+          ))}
+        </div>
+      </article>
+
+      <article className="rounded-[1rem] border border-black/8 bg-ink-strong/4 px-4 py-3">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <p className="text-xs uppercase tracking-[0.16em] text-ink-soft">
+              Conflict hotspots
+            </p>
+            <p className="mt-2 text-sm leading-6 text-ink-soft">
+              Shared targets with opposing control patterns.
+            </p>
+          </div>
+          <span className="rounded-full border border-black/10 bg-white/75 px-3 py-2 text-xs font-semibold tracking-[0.16em] text-ink-soft uppercase">
+            {audit.conflictHotspots.length}
+          </span>
+        </div>
+
+        <div className="mt-4 grid gap-2">
+          {conflictHighlights.length === 0 ? (
+            <p className="rounded-[0.9rem] border border-dashed border-black/10 bg-white/65 px-3 py-3 text-sm text-ink-soft">
+              No conflict hotspots detected in this scan.
+            </p>
+          ) : (
+            conflictHighlights.map((highlight) => (
+              <div
+                className="rounded-[0.9rem] border border-black/10 bg-white/75 px-3 py-3"
+                key={highlight.id}
+              >
+                <p className="text-sm font-semibold text-ink-strong">
+                  {highlight.title}
+                </p>
+                <p className="mt-1 text-xs text-ink-soft">{highlight.id}</p>
+                <p className="mt-2 text-sm leading-6 text-ink-soft">
+                  {highlight.detail}
+                </p>
+              </div>
+            ))
+          )}
+        </div>
+      </article>
+
+      <article className="rounded-[1rem] border border-black/8 bg-ink-strong/4 px-4 py-3">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <p className="text-xs uppercase tracking-[0.16em] text-ink-soft">
+              Intent clusters
+            </p>
+            <p className="mt-2 text-sm leading-6 text-ink-soft">
+              Writers grouped by similar names, helpers, areas, and targets.
+            </p>
+          </div>
+          <span className="rounded-full border border-black/10 bg-white/75 px-3 py-2 text-xs font-semibold tracking-[0.16em] text-ink-soft uppercase">
+            {audit.intentClusters.length}
+          </span>
+        </div>
+
+        <div className="mt-4 grid gap-2">
+          {intentHighlights.length === 0 ? (
+            <p className="rounded-[0.9rem] border border-dashed border-black/10 bg-white/65 px-3 py-3 text-sm text-ink-soft">
+              No multi-object intent clusters were inferred from this scan.
+            </p>
+          ) : (
+            intentHighlights.map((highlight) => (
+              <div
+                className="rounded-[0.9rem] border border-black/10 bg-white/75 px-3 py-3"
+                key={highlight.id}
+              >
+                <p className="text-sm font-semibold text-ink-strong">
+                  {highlight.title}
+                </p>
+                <p className="mt-2 text-sm leading-6 text-ink-soft">
+                  {highlight.detail}
+                </p>
+              </div>
+            ))
+          )}
+        </div>
+      </article>
+    </section>
   );
 }
 
